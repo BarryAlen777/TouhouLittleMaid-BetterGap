@@ -1,5 +1,6 @@
 # TouhouLittleMaid-BetterGap
-车万女仆(Touhou Little Maid)附属模组，基于原版隙间饰品进行全面增强升级
+[车万女仆](https://www.mcmod.cn/class/1796.html)
+(Touhou Little Maid)附属模组，基于原版隙间饰品进行全面增强升级
 
 ## 📋 前置依赖
 必须安装 **车万女仆(Touhou Little Maid)**，本模组仅为附属扩展，无法独立运行。
