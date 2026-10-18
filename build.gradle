@@ -1,0 +1,21 @@
+plugins { id 'java'; id 'net.minecraftforge.gradle' version '[6.0,6.2)' }
+version = '1.1.0-r11'
+group = 'cn.blockforge.generated.maidbettergap'
+// 模组英文名（jar 文件名不允许空格和冒号，故用连字符形式）
+base { archivesName = 'TouhouLittleMaid-BetterGap' }
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+minecraft { mappings channel: 'official', version: '1.20.1' }
+dependencies { minecraft 'net.minecraftforge:forge:1.20.1-47.4.0' }
+tasks.withType(JavaCompile).configureEach { options.encoding = 'UTF-8' }
+processResources {
+    def props = [mod_id: 'maid_better_gap', mod_name: '车万女仆：更好的隙间', mod_version: project.version,
+                 minecraft_version: '1.20.1', forge_version: '47.4.0']
+    inputs.properties props
+    filteringCharset = 'UTF-8'
+    filesMatching('META-INF/mods.toml') { expand props }
+}
+jar {
+    // TLM API 编译桩不打包：运行时使用车万女仆模组自己的类，避免类冲突
+    exclude 'com/github/tartaricacid/**'
+}
+jar.finalizedBy('reobfJar')

@@ -1,0 +1,18 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "conditions": [
+    {
+      "type": "forge:item_exists",
+      "item": "touhou_little_maid:wireless_io"
+    }
+  ],
+  "ingredients": [
+    { "item": "touhou_little_maid:wireless_io" },
+    { "item": "minecraft:diamond" }
+  ],
+  "result": {
+    "item": "maid_better_gap:maid_gap_terminal",
+    "count": 1
+  }
+}

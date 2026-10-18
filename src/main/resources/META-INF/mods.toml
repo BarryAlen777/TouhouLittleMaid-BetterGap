@@ -1,0 +1,31 @@
+modLoader="javafml"
+loaderVersion="[47,)"
+license="MIT License"
+[[mods]]
+modId="${mod_id}"
+version="${mod_version}"
+displayName="${mod_name}"
+authors="BarryAlen777"
+displayURL="https://github.com/BarryAlen777/TouhouLittleMaid-BetterGap"
+issueTrackerURL="https://github.com/BarryAlen777/TouhouLittleMaid-BetterGap/issues"
+logoFile="logo.png"
+description='''Touhou Little Maid: Better Gap（车万女仆：更好的隙间）
+开源地址: https://github.com/BarryAlen777/TouhouLittleMaid-BetterGap'''
+[[dependencies.${mod_id}]]
+modId="forge"
+mandatory=true
+versionRange="[47,)"
+ordering="NONE"
+side="BOTH"
+[[dependencies.${mod_id}]]
+modId="minecraft"
+mandatory=true
+versionRange="[${minecraft_version}]"
+ordering="NONE"
+side="BOTH"
+[[dependencies.${mod_id}]]
+modId="touhou_little_maid"
+mandatory=true
+versionRange="[1.0,)"
+ordering="AFTER"
+side="BOTH"

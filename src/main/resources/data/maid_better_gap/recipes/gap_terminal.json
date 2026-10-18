@@ -1,0 +1,13 @@
+{
+  "type": "minecraft:crafting_shapeless",
+  "category": "equipment",
+  "ingredients": [
+    { "item": "minecraft:ender_eye" },
+    { "item": "minecraft:redstone" },
+    { "item": "minecraft:iron_ingot" }
+  ],
+  "result": {
+    "item": "maid_better_gap:gap_terminal",
+    "count": 1
+  }
+}
