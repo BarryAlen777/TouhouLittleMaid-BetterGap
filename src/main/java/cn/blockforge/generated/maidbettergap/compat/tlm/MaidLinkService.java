@@ -1,5 +1,6 @@
 package cn.blockforge.generated.maidbettergap.compat.tlm;
 
+import cn.blockforge.generated.maidbettergap.GeneratedMod;
 import cn.blockforge.generated.maidbettergap.ModItems;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import cn.blockforge.generated.maidbettergap.gap.GapItemData;
@@ -40,6 +41,9 @@ import java.util.UUID;
  */
 public final class MaidLinkService {
 
+    /** 归属校验退化只提醒一次，别把日志刷爆。 */
+    private static boolean NOT_OWNABLE_WARNED;
+
     private MaidLinkService() {}
 
     /** 右键目标是不是一只女仆。 */
@@ -49,7 +53,7 @@ public final class MaidLinkService {
 
     /**
      * 隙间终端右键女仆：链接到这只女仆并直接打开设置界面。
-     * 两侧都要拦下事件，防止车万女仆自己的“右键女仆开女仆背包”抢走这次点击。
+     * 两侧都要拦下事件，防止车万女仆自己的“右键女仆开女仆界面”抢走这次点击。
      */
     public static void handleInteract(PlayerInteractEvent.EntityInteract event) {
         if (!(event.getTarget() instanceof EntityMaid maid)) {
@@ -59,17 +63,30 @@ public final class MaidLinkService {
         if (held.getItem() != ModItems.GAP_TERMINAL.get()) {
             return;
         }
+        // 只能链接自己的女仆：别人家的女仆既不能连、也不能改她身上的隙间。
+        // 归属判断放在「取消事件」之前，而且客户端也要做（主人 UUID 是同步到客户端的）：
+        // 否则客户端把这次点击消费掉了、服务端却把事件还给了车万女仆，
+        // 会出现“服务端开了女仆界面、客户端没开”的两侧不一致。
+        if (!ownedBy(maid, event.getEntity().getUUID())) {
+            // 不取消、也不改 cancellationResult：车万女仆自己的“右键开女仆界面”两侧都照常处理
+            if (event.getSide() == LogicalSide.SERVER) {
+                event.getEntity().displayClientMessage(Component.translatable("msg.maidgap.not_owner")
+                        .withStyle(ChatFormatting.RED), true);
+            }
+            return;
+        }
         event.setCanceled(true);
         if (event.getSide() != LogicalSide.SERVER) {
             event.setCancellationResult(InteractionResult.CONSUME);
             return;
         }
         event.setCancellationResult(InteractionResult.SUCCESS);
-        ServerPlayer sp = (ServerPlayer) event.getEntity();
-        if (sp.isSpectator()) {
+        if (!(event.getEntity() instanceof ServerPlayer sp) || sp.isSpectator()) {
             return;
         }
         link(held, maid);
+        // NBT 改了要推一次同步，否则客户端手里的终端 tooltip 一直停在“未链接”
+        ContainerService.syncHeld(sp);
         sp.displayClientMessage(Component.translatable("msg.maidgap.linked", displayName(maid))
                 .withStyle(ChatFormatting.LIGHT_PURPLE), true);
         sp.playSound(SoundEvents.ENDERMAN_TELEPORT, 0.35f, 1.7f);
@@ -100,6 +117,10 @@ public final class MaidLinkService {
                 if (!alive(e) || e.distanceToSqr(user) > radius * radius) {
                     continue;
                 }
+                // 只用自己女仆身上的隙间：别人的女仆不归你管，绝不能借她的绑定翻别人家箱子
+                if (!ownedBy(maid, user.getUUID())) {
+                    continue;
+                }
                 BaubleItemHandler baubles = maid.getMaidBauble();
                 for (int i = 0; i < baubles.getSlots(); i++) {
                     ItemStack st = baubles.getStackInSlot(i);
@@ -126,6 +147,11 @@ public final class MaidLinkService {
         EntityMaid maid = findMaid(user.server, uuid);
         if (maid == null) {
             return GapTarget.emptyTerminal(savedName);
+        }
+        // 终端可能已经被转手给别人（卖掉 / 掉落被捡）：链接只在“女仆仍归你”时有效，
+        // 否则拿到终端的人就能借这个链接翻别人家的箱子
+        if (!ownedBy(maid, user.getUUID())) {
+            return GapTarget.ofOtherPlayer(savedName);
         }
         String name = displayName(maid);
         BaubleItemHandler baubles = maid.getMaidBauble();
@@ -183,6 +209,28 @@ public final class MaidLinkService {
             // 版本不匹配时退回全空显示，锁定本身仍然可编辑
         }
         return out;
+    }
+
+    /**
+     * 这只女仆是不是这位玩家的。
+     * 归属信息走原版接口 OwnableEntity 读，既避开了重混淆的坑，也不用引用车万女仆自己的方法。
+     * 读不到归属（没主人的女仆 / 旧版本实体）时保守放行，免得好好的功能突然不能用。
+     */
+    public static boolean ownedBy(Entity maid, UUID player) {
+        if (player == null) {
+            return true;
+        }
+        if (!(maid instanceof net.minecraft.world.entity.OwnableEntity ownable)) {
+            // 车万女仆将来若不再继承 TamableAnimal，这里会静默退化成“一律放行”。
+            // 至少往日志里喊一声，别让越权修复无声无息地失效。
+            if (!NOT_OWNABLE_WARNED) {
+                NOT_OWNABLE_WARNED = true;
+                GeneratedMod.LOGGER.warn("[maid_better_gap] 女仆不是 OwnableEntity，归属校验无法生效（车万女仆版本变了？）");
+            }
+            return true;
+        }
+        UUID owner = ownable.getOwnerUUID();
+        return owner == null || owner.equals(player);
     }
 
     @Nullable

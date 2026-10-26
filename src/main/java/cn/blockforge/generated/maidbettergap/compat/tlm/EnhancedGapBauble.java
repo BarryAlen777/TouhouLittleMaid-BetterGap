@@ -111,9 +111,9 @@ public final class EnhancedGapBauble implements IMaidBauble {
                 continue;
             }
             if (maidToChest) {
-                moved |= maidToChest(maidInv, chest, allowed, slotLock, cap);
+                moved |= maidToChest(asEntity, maidInv, chest, allowed, slotLock, cap);
             } else {
-                moved |= chestToMaid(chest, maidInv, allowed, slotLock, cap);
+                moved |= chestToMaid(asEntity, chest, maidInv, allowed, slotLock, cap);
             }
         }
         if (moved) {
@@ -170,7 +170,7 @@ public final class EnhancedGapBauble implements IMaidBauble {
     // 搬运（过滤语义与原版一致：allowMove = 名单里 ? !黑名单 : 黑名单）
     // ------------------------------------------------------------------
 
-    private static boolean maidToChest(IItemHandler maid, IItemHandler chest,
+    private static boolean maidToChest(Entity maidEntity, IItemHandler maid, IItemHandler chest,
                                        java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock, int cap) {
         boolean moved = false;
         for (int i = 0; i < maid.getSlots(); i++) {
@@ -194,14 +194,12 @@ public final class EnhancedGapBauble implements IMaidBauble {
             if (rest.getCount() < got.getCount()) {
                 moved = true;
             }
-            if (!rest.isEmpty()) {
-                maid.insertItem(i, rest, false); // 塞不进箱子的放回去，绝不让物品消失
-            }
+            returnTo(maidEntity, rest, maid, i); // 塞不进箱子的放回去，绝不让物品消失
         }
         return moved;
     }
 
-    private static boolean chestToMaid(IItemHandler chest, IItemHandler maid,
+    private static boolean chestToMaid(Entity maidEntity, IItemHandler chest, IItemHandler maid,
                                        java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock, int cap) {
         boolean moved = false;
         for (int i = 0; i < chest.getSlots(); i++) {
@@ -221,11 +219,32 @@ public final class EnhancedGapBauble implements IMaidBauble {
             if (rest.getCount() < got.getCount()) {
                 moved = true;
             }
-            if (!rest.isEmpty()) {
-                chest.insertItem(i, rest, false); // 女仆背包塞不下的放回箱子
-            }
+            returnTo(maidEntity, rest, chest, i); // 女仆背包塞不下的放回箱子
         }
         return moved;
+    }
+
+    /**
+     * 把没搬走的部分放回原来的容器。
+     * 万一原槽位已经不收了（槽位上限、被别的模组锁住…），再找别的空位，
+     * 最后兜底掉在女仆脚下——宁可地上多一堆，也绝不凭空吞掉玩家的物品。
+     */
+    private static void returnTo(Entity maidEntity, ItemStack rest, IItemHandler back, int slot) {
+        if (rest.isEmpty()) {
+            return;
+        }
+        ItemStack left = back.insertItem(slot, rest, false);
+        if (left.isEmpty()) {
+            return;
+        }
+        left = ItemHandlerHelper.insertItemStacked(back, left, false);
+        if (left.isEmpty()) {
+            return;
+        }
+        Level level = maidEntity.level();
+        if (!level.isClientSide()) {
+            net.minecraft.world.level.block.Block.popResource(level, maidEntity.blockPosition(), left);
+        }
     }
 
     /** 仿原版：先找可堆叠的槽、再找空槽，跳过被原版 GUI 锁定的女仆槽。 */

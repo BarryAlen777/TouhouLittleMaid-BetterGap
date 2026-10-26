@@ -1,13 +1,10 @@
 package cn.blockforge.generated.maidbettergap.client;
 
 import cn.blockforge.generated.maidbettergap.GeneratedMod;
-import cn.blockforge.generated.maidbettergap.ModItems;
-import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import cn.blockforge.generated.maidbettergap.network.ModNetwork;
 import cn.blockforge.generated.maidbettergap.network.OpenTerminalPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.player.Player;
-import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.api.distmarker.Dist;
 import net.minecraftforge.event.TickEvent;
 import net.minecraftforge.eventbus.api.SubscribeEvent;
@@ -31,14 +28,9 @@ public final class GapClientTicks {
         if (player == null || player.isSpectator()) {
             return;
         }
-        ItemStack main = player.getMainHandItem();
-        ItemStack off = player.getOffhandItem();
-        // 两只手都要看：终端或隙间放在副手时按 G 也该能打开
-        boolean holding = ContainerService.isGapItem(main) || ContainerService.isGapItem(off)
-                || main.getItem() == ModItems.GAP_TERMINAL.get()
-                || off.getItem() == ModItems.GAP_TERMINAL.get();
-        if (holding) {
-            ModNetwork.sendToServer(new OpenTerminalPacket());
-        }
+        // 客户端不再自己判断“手里有没有隙间”：本地配置里的额外隙间白名单（EXTRA_GAP_ITEMS）
+        // 可能和服务端不一致，那样按 G 会毫无反应且没有提示。
+        // 统一把请求发给服务端，由服务端决定开不开（它有同样的持物检查 + 冷却）。
+        ModNetwork.sendToServer(new OpenTerminalPacket());
     }
 }

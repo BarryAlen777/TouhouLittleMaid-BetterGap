@@ -36,6 +36,27 @@ public final class GapStore {
      */
     private static final Map<UUID, List<RecentUse>> RECENT_USED = new HashMap<>();
 
+    /**
+     * 上一次处理各类请求时的游戏时间，按玩家 UUID 记（只在服务端内存里，不写存档）。
+     * 作用只有一个：作弊客户端一个 tick 发几百个包时，别让服务端跟着它跑。
+     *
+     * 分桶记，不共用一个时间戳：刷新包的间隔（10 tick）比普通动作（1 tick）长得多，
+     * 共用一张表就会出现「刚点完拿取、3 tick 后点刷新被当成刷屏挡掉」，
+     * 玩家看到的是刷新按钮时灵时不灵。
+     */
+    private static final Map<UUID, long[]> ACTION_CLOCKS = new HashMap<>();
+
+    /** 限速桶：界面里的普通动作（拿取 / 取桶 / 切换 / 解绑…）。 */
+    public static final int BUCKET_ACTION = 0;
+    /** 限速桶：刷新界面。 */
+    public static final int BUCKET_REFRESH = 1;
+    /** 限速桶：打开终端（G 键 / 右键空气）。 */
+    public static final int BUCKET_OPEN = 2;
+    /** 限速桶：重复提示（只用来别让同一句提示每 tick 刷屏）。 */
+    public static final int BUCKET_HINT = 3;
+
+    private static final int BUCKET_COUNT = 4;
+
     /** 一条“最近用过”记录：物品样本 + 用掉时的游戏时间（用来判断新不新鲜）。 */
     private record RecentUse(ItemStack stack, long time) {
     }
@@ -146,6 +167,33 @@ public final class GapStore {
     public static void forgetRecent(Player player) {
         if (player != null) {
             RECENT_USED.remove(player.getUUID());
+            ACTION_CLOCKS.remove(player.getUUID());
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 请求限速：同一个玩家同一类请求两次之间至少隔 minTicks 个游戏刻
+    // ------------------------------------------------------------------
+
+    /**
+     * 这次请求放不放行。放行时会记下当前时间，所以同一个 tick 里第二个同类包就会被挡掉。
+     *
+     * @param bucket   限速桶（{@link #BUCKET_ACTION} / {@link #BUCKET_REFRESH} / {@link #BUCKET_OPEN}）
+     * @param minTicks 最短间隔（游戏刻，20 tick = 1 秒）
+     */
+    public static boolean allowAction(Player player, int bucket, int minTicks) {
+        if (player == null) {
+            return false;
+        }
+        int idx = bucket < 0 || bucket >= BUCKET_COUNT ? BUCKET_ACTION : bucket;
+        long now = player.level().getGameTime();
+        long[] clocks = ACTION_CLOCKS.computeIfAbsent(player.getUUID(),
+                k -> new long[]{Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE, Long.MIN_VALUE});
+        long last = clocks[idx];
+        if (last != Long.MIN_VALUE && now - last < Math.max(1, minTicks)) {
+            return false;
+        }
+        clocks[idx] = now;
+        return true;
     }
 }

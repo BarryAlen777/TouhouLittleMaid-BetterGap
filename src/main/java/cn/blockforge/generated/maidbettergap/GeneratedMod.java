@@ -1,12 +1,15 @@
 package cn.blockforge.generated.maidbettergap;
 
 import cn.blockforge.generated.maidbettergap.network.ModNetwork;
+import com.mojang.logging.LogUtils;
 import net.minecraftforge.eventbus.api.IEventBus;
+import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.ModLoadingContext;
 import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import org.slf4j.Logger;
 
 /**
  * 车万女仆：更好的隙间（Touhou Little Maid: Better Gap）—— 让隙间成为可跨模组、可配置、带可视化反馈的智能物流终端。
@@ -32,6 +35,8 @@ public final class GeneratedMod {
 
     public static final String MOD_ID = "maid_better_gap";
 
+    public static final Logger LOGGER = LogUtils.getLogger();
+
     public GeneratedMod() {
         IEventBus bus = FMLJavaModLoadingContext.get().getModEventBus();
         // 用 COMMON 而不是 SERVER：车万女仆在 common setup 阶段就会调用我们的
@@ -44,5 +49,25 @@ public final class GeneratedMod {
 
     private void commonSetup(FMLCommonSetupEvent event) {
         event.enqueueWork(ModNetwork::init);
+        event.enqueueWork(GeneratedMod::logDependencies);
+    }
+
+    /**
+     * 启动自检：把前置版本打进日志。
+     * 我们和车万女仆之间是「编译桩 + 运行时反射式对接」的关系，版本一变就可能对接不上，
+     * 出了问题（终端没反应、女仆不搬东西）先看这一行就能判断是不是版本的事。
+     */
+    private static void logDependencies() {
+        ModList list = ModList.get();
+        if (list == null) {
+            return;
+        }
+        var tlm = list.getModContainerById("touhou_little_maid");
+        if (tlm.isEmpty()) {
+            LOGGER.info("[maid_better_gap] 未检测到车万女仆：终端与女仆饰品功能不可用，其余功能正常");
+        } else {
+            LOGGER.info("[maid_better_gap] 已对接车万女仆 {}（mods.toml 里声明 [1.0,)）",
+                    tlm.get().getModInfo().getVersion());
+        }
     }
 }

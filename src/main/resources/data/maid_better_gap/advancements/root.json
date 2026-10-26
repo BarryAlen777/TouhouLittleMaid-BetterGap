@@ -1,0 +1,28 @@
+{
+  "display": {
+    "icon": {
+      "item": "maid_better_gap:maid_gap_terminal"
+    },
+    "title": {
+      "translate": "advancements.maid_better_gap.root.title"
+    },
+    "description": {
+      "translate": "advancements.maid_better_gap.root.description"
+    },
+    "background": "minecraft:textures/gui/advancements/backgrounds/stone.png",
+    "frame": "task",
+    "show_toast": false,
+    "announce_to_chat": false,
+    "hidden": false
+  },
+  "criteria": {
+    "granted": {
+      "trigger": "minecraft:impossible"
+    }
+  },
+  "requirements": [
+    [
+      "granted"
+    ]
+  ]
+}

@@ -1,5 +1,6 @@
 package cn.blockforge.generated.maidbettergap.network;
 
+import cn.blockforge.generated.maidbettergap.GeneratedMod;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
@@ -37,7 +38,13 @@ public class GapActionPacket {
         // consumerMainThread：已经处于主线程，直接处理
         ServerPlayer player = ctx.getSender();
         if (player != null) {
-            ContainerService.handleAction(player, type, entryIndex, slot);
+            try {
+                ContainerService.handleAction(player, type, entryIndex, slot);
+            } catch (LinkageError err) {
+                // 车万女仆改了内部方法签名时（我们用的是编译桩），网络线程里漏出去的 LinkageError
+                // 会直接踢崩服务器。这里只丢这一次动作，别让整局游戏陪葬。
+                GeneratedMod.LOGGER.error("[maid_better_gap] 动作处理时类链接失败（车万女仆版本不匹配？）", err);
+            }
         }
         ctx.setPacketHandled(true);
     }

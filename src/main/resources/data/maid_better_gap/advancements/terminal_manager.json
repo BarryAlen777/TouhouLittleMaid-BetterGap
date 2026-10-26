@@ -1,0 +1,37 @@
+{
+  "parent": "maid_better_gap:root",
+  "display": {
+    "icon": {
+      "item": "maid_better_gap:gap_terminal"
+    },
+    "title": {
+      "translate": "advancements.maid_better_gap.terminal_manager.title"
+    },
+    "description": {
+      "translate": "advancements.maid_better_gap.terminal_manager.description"
+    },
+    "frame": "goal",
+    "show_toast": true,
+    "announce_to_chat": true,
+    "hidden": false
+  },
+  "criteria": {
+    "obtained": {
+      "trigger": "minecraft:inventory_changed",
+      "conditions": {
+        "items": [
+          {
+            "items": [
+              "maid_better_gap:gap_terminal"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "requirements": [
+    [
+      "obtained"
+    ]
+  ]
+}

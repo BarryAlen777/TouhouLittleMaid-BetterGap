@@ -83,29 +83,57 @@ public final class TagMatcher {
         return TagKey.create(Registries.ITEM, rl);
     }
 
-    private static boolean allowed(ResourceLocation rl) {
-        List<? extends String> namespaces = MaidGapConfig.TAG_MATCH_NAMESPACES.get();
-        boolean nsOk = namespaces == null || namespaces.isEmpty();
-        if (!nsOk) {
-            for (String ns : namespaces) {
-                if (ns != null && ns.trim().toLowerCase(Locale.ROOT).equals(rl.getNamespace())) {
-                    nsOk = true;
-                    break;
-                }
+    /**
+     * 配置解析结果缓存：标签匹配在热路径上（每次搬东西都要过一遍名单），
+     * 而 allowed() 每次都会把配置里的字符串小写化再逐条比较，很浪费。
+     * 配置对象本身在重载时会被替换，所以用「引用是否变了」来判断要不要重新解析。
+     */
+    private static List<? extends String> nsRaw;
+    private static Set<String> nsSet = Set.of();
+    private static List<? extends String> blRaw;
+    private static Set<String> blSet = Set.of();
+
+    private static Set<String> namespaces() {
+        List<? extends String> raw = MaidGapConfig.TAG_MATCH_NAMESPACES.get();
+        if (raw != nsRaw) {
+            nsRaw = raw;
+            nsSet = lowerSet(raw);
+        }
+        return nsSet;
+    }
+
+    private static Set<String> blacklist() {
+        List<? extends String> raw = MaidGapConfig.TAG_MATCH_BLACKLIST.get();
+        if (raw != blRaw) {
+            blRaw = raw;
+            blSet = lowerSet(raw);
+        }
+        return blSet;
+    }
+
+    private static Set<String> lowerSet(List<? extends String> raw) {
+        if (raw == null || raw.isEmpty()) {
+            return Set.of();
+        }
+        Set<String> out = new HashSet<>();
+        for (String s : raw) {
+            if (s == null) {
+                continue;
+            }
+            String t = s.trim().toLowerCase(Locale.ROOT);
+            if (!t.isEmpty()) {
+                out.add(t);
             }
         }
-        if (!nsOk) {
+        return out;
+    }
+
+    private static boolean allowed(ResourceLocation rl) {
+        Set<String> namespaces = namespaces();
+        // 空名单 = 全部命名空间都参与（与原逻辑一致）
+        if (!namespaces.isEmpty() && !namespaces.contains(rl.getNamespace())) {
             return false;
         }
-        List<? extends String> blacklist = MaidGapConfig.TAG_MATCH_BLACKLIST.get();
-        if (blacklist != null) {
-            String id = rl.toString();
-            for (String s : blacklist) {
-                if (s != null && s.trim().toLowerCase(Locale.ROOT).equals(id)) {
-                    return false;
-                }
-            }
-        }
-        return true;
+        return !blacklist().contains(rl.toString());
     }
 }

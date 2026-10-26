@@ -69,6 +69,10 @@ public class GapTerminalScreen extends Screen {
     private int invTop;
     private int hotTop;
     private final List<RowInfo> visible = new ArrayList<>();
+    /** 面板的显示缩放：窗口放不下 360×288 时小于 1（见 init）。 */
+    private float scale = 1f;
+    /** 自动刷新的倒计时（tick）。 */
+    private int refreshCooldown = 20;
 
     public GapTerminalScreen(TerminalSnapshot snapshot) {
         super(Component.translatable("maidgap.gui.title"));
@@ -107,9 +111,17 @@ public class GapTerminalScreen extends Screen {
 
     @Override
     protected void init() {
-        // 窗口太窄时（GUI 缩放拉得很大）至少保证面板左边贴住屏幕，不会整块画到屏幕外
-        left = Math.max(2, (this.width - GW) / 2);
-        top = Math.max(2, (this.height - GH) / 2);
+        // 面板固定 360×288，但窗口（GUI 缩放拉大时）可能放不下：
+        // 放不下就整体等比缩小，而不是把下半截画到屏幕外。
+        this.scale = Math.min(1f, Math.min((this.width - 4f) / GW, (this.height - 4f) / GH));
+        if (this.scale <= 0f) {
+            this.scale = 1f;
+        }
+        // 布局一律用“逻辑坐标”（未缩放），render 时统一乘 scale、鼠标坐标统一除 scale
+        int logicalW = Math.round(this.width / this.scale);
+        int logicalH = Math.round(this.height / this.scale);
+        left = Math.max(2, (logicalW - GW) / 2);
+        top = Math.max(2, (logicalH - GH) / 2);
         rx = left + 196;
         gridLeft = left + 8;
         gridTop = top + 52;
@@ -119,15 +131,17 @@ public class GapTerminalScreen extends Screen {
         filterLeft = rx;
         filterTop = top + 160;
 
-        // 容器选择按钮（第一行，右侧是绑定计数文字，互不重叠）
+        // 容器选择按钮（第一行；右边那行标题里放绑定计数，互不重叠）
         for (int i = 0; i < snap.entries.size(); i++) {
             final int idx = i;
             String mark = idx == selected ? "▶" : "  ";
-            addRenderableWidget(Button.builder(Component.literal(mark + "绑" + (idx + 1)), btn -> {
-                        selected = idx;
-                        page = 0;
-                        rebuildWidgets();
-                    })
+            addRenderableWidget(Button.builder(
+                            Component.literal(mark).append(Component.translatable("maidgap.gui.bind_n",
+                                    String.valueOf(idx + 1))), btn -> {
+                                selected = idx;
+                                page = 0;
+                                rebuildWidgets();
+                            })
                     .bounds(left + 6 + idx * 40, top + 16, 38, 16)
                     .build());
         }
@@ -277,6 +291,14 @@ public class GapTerminalScreen extends Screen {
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(guiGraphics);
 
+        // 整体等比缩放：下面的所有绘制都按“逻辑坐标”写，鼠标坐标换算回逻辑坐标再判定
+        guiGraphics.pose().pushPose();
+        if (scale != 1f) {
+            guiGraphics.pose().scale(scale, scale, 1f);
+            mouseX = Math.round(mouseX / scale);
+            mouseY = Math.round(mouseY / scale);
+        }
+
         // 面板底色必须先画：super.render 画的是按钮，画在后面会把按钮整片盖住
         guiGraphics.fill(left, top, left + GW, top + GH, 0xF0101014);
         guiGraphics.fill(left, top, left + GW, top + 2, 0xFF8A2BE2);
@@ -285,14 +307,16 @@ public class GapTerminalScreen extends Screen {
 
         super.render(guiGraphics, mouseX, mouseY, partialTick);
 
-        // 标题
-        guiGraphics.drawCenteredString(this.font, titleComponent(), left + GW / 2, top + 4, 0xE0C8FF);
+        // 标题：居中范围右侧给“已绑定 n/m”留出位置，长女仆名也不会和计数文字压在一起
+        int titleRight = snap.holdingGap ? left + GW - 92 : left + GW;
+        guiGraphics.drawCenteredString(this.font, titleComponent(), left + (titleRight - left) / 2, top + 4, 0xE0C8FF);
 
-        // 绑定计数：放在右栏顶部（容器按钮变多时（最多 8 个）也不会和它撞在一起）
+        // 绑定计数：放在标题那一行右端（那一行没有按钮，容器按钮最多 8 个也不会和它撞上）
         if (snap.holdingGap) {
             Component count = Component.translatable("maidgap.gui.bind_count",
                     String.valueOf(snap.entries.size()), String.valueOf(snap.maxContainers));
-            guiGraphics.drawString(this.font, count, rx, top + 20, 0xC8B4FF, false);
+            guiGraphics.drawString(this.font, count,
+                    left + GW - 4 - this.font.width(count), top + 4, 0xC8B4FF, false);
         }
 
         // 物品网格（箱子内容）
@@ -363,7 +387,12 @@ public class GapTerminalScreen extends Screen {
                 left + 6, top + 268, 0xA0A0A0, false);
 
         // 右栏：绑定容器信息
-        if (snap.viaTerminal && snap.linkMissing) {
+        if (snap.viaTerminal && snap.notOwner) {
+            guiGraphics.drawString(this.font, Component.translatable("maidgap.gui.not_owner")
+                    .withStyle(ChatFormatting.RED), rx, top + 60, 0xFF8080, false);
+            guiGraphics.drawString(this.font, Component.translatable("maidgap.gui.not_owner.2")
+                    .withStyle(ChatFormatting.GRAY), rx, top + 72, 0xC0C0C0, false);
+        } else if (snap.viaTerminal && snap.linkMissing) {
             guiGraphics.drawString(this.font, Component.translatable("maidgap.gui.link_missing")
                     .withStyle(ChatFormatting.RED), rx, top + 60, 0xFF8080, false);
             guiGraphics.drawString(this.font, Component.translatable("maidgap.gui.link_missing.2")
@@ -465,6 +494,8 @@ public class GapTerminalScreen extends Screen {
             }
             guiGraphics.renderTooltip(this.font, tooltip, java.util.Optional.empty(), mouseX, mouseY);
         }
+
+        guiGraphics.pose().popPose();
     }
 
     /** 画一个玩家背包槽，返回鼠标是否悬停其上。 */
@@ -483,6 +514,9 @@ public class GapTerminalScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int mouseButton) {
+        // 画面做了等比缩放：鼠标坐标要换算回逻辑坐标，按钮的判定框也是按逻辑坐标放的
+        mouseX /= scale;
+        mouseY /= scale;
         if (super.mouseClicked(mouseX, mouseY, mouseButton)) {
             return true;
         }
@@ -562,6 +596,30 @@ public class GapTerminalScreen extends Screen {
             }
         }
         return -1;
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int mouseButton) {
+        // 按钮的“松手”判定也用的是逻辑坐标，必须一起换算，否则缩小时点不动按钮
+        return super.mouseReleased(mouseX / scale, mouseY / scale, mouseButton);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int mouseButton, double dragX, double dragY) {
+        return super.mouseDragged(mouseX / scale, mouseY / scale, mouseButton, dragX / scale, dragY / scale);
+    }
+
+    @Override
+    public void tick() {
+        super.tick();
+        // 每 20 tick（1 秒）自动刷新一次：别人动过绑定的箱子、女仆刚搬完东西，
+        // 界面都会跟着变，不用玩家自己记得点「刷新」。
+        // 服务端刷新包的最小间隔是 10 tick，这里留足余量，不会被打包限速挡掉。
+        if (--refreshCooldown > 0) {
+            return;
+        }
+        refreshCooldown = 20;
+        ModNetwork.sendToServer(new GapActionPacket(ContainerService.ACT_REFRESH, 0, 0));
     }
 
     @Override

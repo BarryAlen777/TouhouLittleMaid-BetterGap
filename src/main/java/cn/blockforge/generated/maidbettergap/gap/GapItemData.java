@@ -63,6 +63,25 @@ public final class GapItemData {
                 out.add(new Binding(e.getString("dim"),
                         new BlockPos(e.getInt("x"), e.getInt("y"), e.getInt("z")), e.getByte("kind")));
             }
+            // 对账：原版 GUI 只会改 BindingPos（它只有单容器、而且不带维度）。
+            // 如果 BindingPos 指向的位置不在我们的列表里，说明玩家是在原版界面上改的绑定，
+            // 把它也算上——否则会出现“原版 GUI 里明明绑了，终端却不认”。
+            // 原版格式不带维度，只能按当前维度兜底（这也是原版自己的行为）。
+            if (tag.contains(K_BINDING_POS, Tag.TAG_COMPOUND)) {
+                CompoundTag p = tag.getCompound(K_BINDING_POS);
+                BlockPos pos = new BlockPos(p.getInt("X"), p.getInt("Y"), p.getInt("Z"));
+                boolean known = false;
+                for (Binding b : out) {
+                    if (b.pos().equals(pos)) {
+                        known = true;
+                        break;
+                    }
+                }
+                if (!known) {
+                    String dim = fallbackDim == null ? "minecraft:overworld" : fallbackDim;
+                    out.add(new Binding(dim, pos, Binding.KIND_ITEM));
+                }
+            }
             return out;
         }
         // 兼容：只用过原版功能的物品（BindingPos 单容器）
@@ -257,6 +276,21 @@ public final class GapItemData {
         };
     }
 
+    /** 名单里是不是已经有这个物品了（按物品类型判，和 addFilter 的去重口径一致）。 */
+    public static boolean containsFilter(ItemStack stack, ItemStack sample) {
+        if (sample.isEmpty()) {
+            return false;
+        }
+        ItemStackHandler h = filterHandler(stack);
+        for (int i = 0; i < h.getSlots(); i++) {
+            ItemStack entry = h.getStackInSlot(i);
+            if (!entry.isEmpty() && ItemStack.isSameItem(entry, sample)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 加入过滤名单（去重）。名单满了返回 false。 */
     public static boolean addFilter(ItemStack stack, ItemStack sample) {
         if (sample.isEmpty()) {
@@ -355,8 +389,11 @@ public final class GapItemData {
         int size = Math.max(maidSlots, Math.min(raw.length, ORIGINAL_SLOT_NUM));
         byte[] tmp = Arrays.copyOf(raw, size);
         // 原版按 38 槽存（0-35 背包 + 36 主手 + 37 副手）：
-        // 女仆实际槽位比 38 多时，把最后两格（主手/副手）的锁定搬到实际数组的末尾
+        // 女仆实际槽位比 38 多时，把最后两格（主手/副手）的锁定搬到实际数组的末尾。
+        // 搬之前必须先把原位置清零：否则多出来的背包第 36/37 格会被误锁（整体错位一格）。
         if (raw.length >= ORIGINAL_SLOT_NUM && size > raw.length && size >= 2) {
+            tmp[ORIGINAL_SLOT_NUM - 2] = 0;
+            tmp[ORIGINAL_SLOT_NUM - 1] = 0;
             tmp[size - 2] = raw[ORIGINAL_SLOT_NUM - 2];
             tmp[size - 1] = raw[ORIGINAL_SLOT_NUM - 1];
         }

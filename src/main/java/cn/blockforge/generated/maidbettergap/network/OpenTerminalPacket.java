@@ -1,5 +1,6 @@
 package cn.blockforge.generated.maidbettergap.network;
 
+import cn.blockforge.generated.maidbettergap.GeneratedMod;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import net.minecraft.network.FriendlyByteBuf;
 import net.minecraft.server.level.ServerPlayer;
@@ -20,7 +21,12 @@ public class OpenTerminalPacket {
         NetworkEvent.Context ctx = ctxSupplier.get();
         ServerPlayer player = ctx.getSender();
         if (player != null) {
-            ContainerService.openTerminal(player);
+            try {
+                ContainerService.openTerminal(player);
+            } catch (LinkageError err) {
+                // 同上：版本不匹配时别把 LinkageError 扔进网络线程（会崩服）
+                GeneratedMod.LOGGER.error("[maid_better_gap] 打开终端时类链接失败（车万女仆版本不匹配？）", err);
+            }
         }
         ctx.setPacketHandled(true);
     }

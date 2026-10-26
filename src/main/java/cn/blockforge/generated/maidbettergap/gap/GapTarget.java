@@ -28,9 +28,11 @@ public final class GapTarget {
     public final boolean linkMissing;
     /** 女仆找到了，但她饰品栏里没有隙间。 */
     public final boolean maidHasNoGap;
+    /** 链接到的女仆不是这位玩家的（终端转手给别人后，这条链接自动失效）。 */
+    public final boolean notOwner;
 
     private GapTarget(ItemStack stack, @Nullable Object maid, int baubleSlot, boolean terminal,
-                      String maidName, boolean linkMissing, boolean maidHasNoGap) {
+                      String maidName, boolean linkMissing, boolean maidHasNoGap, boolean notOwner) {
         this.stack = stack;
         this.maid = maid;
         this.baubleSlot = baubleSlot;
@@ -38,21 +40,27 @@ public final class GapTarget {
         this.maidName = maidName;
         this.linkMissing = linkMissing;
         this.maidHasNoGap = maidHasNoGap;
+        this.notOwner = notOwner;
     }
 
     public static GapTarget held(ItemStack stack) {
-        return new GapTarget(stack, null, -1, false, "", stack.isEmpty(), false);
+        return new GapTarget(stack, null, -1, false, "", stack.isEmpty(), false, false);
     }
 
     public static GapTarget emptyTerminal(String savedName) {
-        return new GapTarget(ItemStack.EMPTY, null, -1, true, savedName, true, false);
+        return new GapTarget(ItemStack.EMPTY, null, -1, true, savedName, true, false, false);
     }
 
     public static GapTarget maidWithoutGap(Object maid, String name) {
-        return new GapTarget(ItemStack.EMPTY, maid, -1, true, name, false, true);
+        return new GapTarget(ItemStack.EMPTY, maid, -1, true, name, false, true, false);
+    }
+
+    /** 链接的女仆是别人的：既不给改，也别提示“她没戴隙间”误导玩家。 */
+    public static GapTarget ofOtherPlayer(String savedName) {
+        return new GapTarget(ItemStack.EMPTY, null, -1, true, savedName, false, false, true);
     }
 
     public static GapTarget ofMaid(ItemStack stack, Object maid, int baubleSlot, String name) {
-        return new GapTarget(stack, maid, baubleSlot, true, name, false, false);
+        return new GapTarget(stack, maid, baubleSlot, true, name, false, false, false);
     }
 }

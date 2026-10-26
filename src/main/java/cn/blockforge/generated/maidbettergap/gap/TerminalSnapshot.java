@@ -63,6 +63,8 @@ public final class TerminalSnapshot {
     public boolean linkMissing;
     /** 女仆找到了，但饰品栏里没有隙间。 */
     public boolean maidHasNoGap;
+    /** 终端链接的女仆不是这位玩家的（不显示她的任何物品）。 */
+    public boolean notOwner;
 
     public TerminalSnapshot() {}
 
@@ -108,6 +110,7 @@ public final class TerminalSnapshot {
         buf.writeUtf(maidName);
         buf.writeBoolean(linkMissing);
         buf.writeBoolean(maidHasNoGap);
+        buf.writeBoolean(notOwner);
     }
 
     public static TerminalSnapshot decode(FriendlyByteBuf buf) {
@@ -155,6 +158,7 @@ public final class TerminalSnapshot {
         s.maidName = buf.readUtf();
         s.linkMissing = buf.readBoolean();
         s.maidHasNoGap = buf.readBoolean();
+        s.notOwner = buf.readBoolean();
         return s;
     }
 }

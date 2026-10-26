@@ -39,6 +39,8 @@ public class SlotConfigScreen extends Screen {
     private int gridLeft;
     private int gridTop;
     private int handX;
+    /** 面板的显示缩放：窗口放不下 212×216 时小于 1（和终端界面同一套做法）。 */
+    private float scale = 1f;
 
     public SlotConfigScreen(GapTerminalScreen parent, byte[] currentLocks, List<ItemStack> maidSlots) {
         super(Component.translatable("maidgap.slot.title"));
@@ -53,8 +55,15 @@ public class SlotConfigScreen extends Screen {
 
     @Override
     protected void init() {
-        left = Math.max(2, (this.width - PW) / 2);
-        top = Math.max(2, (this.height - PH) / 2);
+        // 和终端界面一致：窗口放不下就整体等比缩小，别把下半截画到屏幕外
+        this.scale = Math.min(1f, Math.min((this.width - 4f) / PW, (this.height - 4f) / PH));
+        if (this.scale <= 0f) {
+            this.scale = 1f;
+        }
+        int logicalW = Math.round(this.width / this.scale);
+        int logicalH = Math.round(this.height / this.scale);
+        left = Math.max(2, (logicalW - PW) / 2);
+        top = Math.max(2, (logicalH - PH) / 2);
         gridLeft = left + 14;
         gridTop = top + 26;
         handX = gridLeft + COLS * SLOT + 22;
@@ -71,6 +80,14 @@ public class SlotConfigScreen extends Screen {
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(g);
+
+        // 整体等比缩放：下面全用逻辑坐标，鼠标坐标换算回逻辑坐标再判定
+        g.pose().pushPose();
+        if (scale != 1f) {
+            g.pose().scale(scale, scale, 1f);
+            mouseX = Math.round(mouseX / scale);
+            mouseY = Math.round(mouseY / scale);
+        }
 
         // 面板必须先画：super.render 画的是按钮，画在后面会把按钮盖住
         g.fill(left, top, left + PW, top + PH, 0xF0101014);
@@ -122,6 +139,8 @@ public class SlotConfigScreen extends Screen {
                     ? "maidgap.slot.tip_locked" : "maidgap.slot.tip_open");
             g.renderTooltip(this.font, tip, mouseX, mouseY);
         }
+
+        g.pose().popPose();
     }
 
     /** 命中的槽位号（0-35 背包、36 主手、37 副手），未命中返回 -1。 */
@@ -183,6 +202,9 @@ public class SlotConfigScreen extends Screen {
 
     @Override
     public boolean mouseClicked(double mouseX, double mouseY, int mouseButton) {
+        // 画面做了等比缩放：鼠标坐标要换算回逻辑坐标（按钮与格子的判定框都是逻辑坐标）
+        mouseX /= scale;
+        mouseY /= scale;
         if (super.mouseClicked(mouseX, mouseY, mouseButton)) {
             return true;
         }
@@ -195,6 +217,16 @@ public class SlotConfigScreen extends Screen {
             return true;
         }
         return false;
+    }
+
+    @Override
+    public boolean mouseReleased(double mouseX, double mouseY, int mouseButton) {
+        return super.mouseReleased(mouseX / scale, mouseY / scale, mouseButton);
+    }
+
+    @Override
+    public boolean mouseDragged(double mouseX, double mouseY, int mouseButton, double dragX, double dragY) {
+        return super.mouseDragged(mouseX / scale, mouseY / scale, mouseButton, dragX / scale, dragY / scale);
     }
 
     /** 关掉（ESC）也回终端，不写数据。 */

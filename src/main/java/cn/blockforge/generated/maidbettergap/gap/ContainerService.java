@@ -51,8 +51,18 @@ import java.util.Set;
 public final class ContainerService {
 
     private static final int MAX_LISTED_SLOTS = 180;
+    /** 一桶 = 1000 mB；换桶必须严格有这么多，少一点都不给（否则剩 1 mB 也能换整桶 = 无限刷桶）。 */
+    private static final int BUCKET_VOLUME = 1000;
+    /** 取物/解绑这类动作包的最短间隔（tick），防作弊客户端狂发把服务器拖垮。 */
+    private static final int ACTION_MIN_TICKS = 1;
+    /** 刷新包更宽松一点：只限制它别被拿来刷网络流量。 */
+    private static final int REFRESH_MIN_TICKS = 10;
+    /** 打开终端（G 键 / 右键空气）的最短间隔：一轮「构建快照」比一个普通动作贵得多。 */
+    private static final int OPEN_MIN_TICKS = 4;
     /** 一次快照最多打包这么多件物品（防止超大仓库把网络包撑爆，客户端直接掉线）。 */
     private static final int MAX_TOTAL_STACKS = 1024;
+    /** 快照包的实际字节上限（保守取 1 MB，超了就少列一些物品）。 */
+    private static final int MAX_SNAPSHOT_BYTES = 1000 * 1000;
     /** “刚用光”的物品只在这么多个游戏刻内算数（600 tick = 30 秒）。 */
     private static final int RECENT_USE_WINDOW_TICKS = 600;
 
@@ -141,7 +151,12 @@ public final class ContainerService {
                 : off.getItem() == ModItems.GAP_TERMINAL.get() ? off : null;
         if (terminal != null) {
             if (tlmLoaded()) {
-                return MaidLinkService.resolve(sp, terminal);
+                try {
+                    return MaidLinkService.resolve(sp, terminal);
+                } catch (LinkageError err) {
+                    // 车万女仆版本对不上：退回“没链接”状态，绝不把异常扔给网络包/服务器线程
+                    return GapTarget.emptyTerminal(GapLinkData.savedName(terminal));
+                }
             }
             return GapTarget.emptyTerminal(GapLinkData.savedName(terminal));
         }
@@ -160,6 +175,9 @@ public final class ContainerService {
     private static String noTargetKey(GapTarget t) {
         if (!t.terminal) {
             return "msg.maidgap.needheld";
+        }
+        if (t.notOwner) {
+            return "msg.maidgap.not_owner";
         }
         return t.linkMissing ? "msg.maidgap.link_none" : "msg.maidgap.maid_nogap";
     }
@@ -230,7 +248,8 @@ public final class ContainerService {
             case FULL -> {
                 message(player, "msg.maidgap.full", ChatFormatting.RED,
                         String.valueOf(MaidGapConfig.MAX_BOUND_CONTAINERS.get()));
-                return false;
+                // 绑定满了也说清楚：这次点击算被隙间处理掉，别再让箱子界面跟着弹出来
+                return true;
             }
         }
         return true;
@@ -337,6 +356,13 @@ public final class ContainerService {
     // ------------------------------------------------------------------
 
     public static TerminalSnapshot build(ServerPlayer user) {
+        return build(user, MAX_TOTAL_STACKS);
+    }
+
+    /**
+     * @param stackBudget 这次最多列多少堆物品（发送前会按包体大小再收紧）
+     */
+    private static TerminalSnapshot build(ServerPlayer user, int stackBudget) {
         TerminalSnapshot s = new TerminalSnapshot();
         s.pickupAmount = 64;
         s.autoRefill = GapStore.autoRefillOn(user);
@@ -347,6 +373,7 @@ public final class ContainerService {
         s.viaTerminal = target.terminal;
         s.linkMissing = target.linkMissing;
         s.maidHasNoGap = target.maidHasNoGap;
+        s.notOwner = target.notOwner;
         s.maidName = target.maidName;
         s.holdingGap = !gap.isEmpty();
         if (s.holdingGap) {
@@ -373,10 +400,10 @@ public final class ContainerService {
                 ResourceLocation blockKey = ForgeRegistries.BLOCKS.getKey(r.blockEntity.getBlockState().getBlock());
                 e.blockId = blockKey == null ? "" : blockKey.toString();
             }
-            if (r.status == TerminalSnapshot.STATUS_OK && listed < MAX_TOTAL_STACKS) {
+            if (r.status == TerminalSnapshot.STATUS_OK && listed < stackBudget) {
                 if (r.items != null) {
                     int limit = Math.min(r.items.getSlots(), MAX_LISTED_SLOTS);
-                    for (int slot = 0; slot < limit && listed < MAX_TOTAL_STACKS; slot++) {
+                    for (int slot = 0; slot < limit && listed < stackBudget; slot++) {
                         ItemStack st = r.items.getStackInSlot(slot);
                         if (!st.isEmpty()) {
                             e.slots.add(slot);
@@ -401,13 +428,155 @@ public final class ContainerService {
     }
 
     public static void openTerminal(Player p) {
-        if (p instanceof ServerPlayer sp) {
-            send(sp, true);
+        if (!(p instanceof ServerPlayer sp) || sp.isSpectator()) {
+            return;
         }
+        // 这也是一个网络入口（G 键 / 右键空气都会走到这里）：不设防的话，
+        // 作弊客户端连点就能让服务端不停「构建快照 + 编码 + 发送」。
+        if (!GapStore.allowAction(sp, GapStore.BUCKET_OPEN, OPEN_MIN_TICKS)) {
+            return;
+        }
+        // 手里既没有隙间也没有终端：不构建（省掉一次全绑定扫描）
+        if (heldGap(sp).isEmpty()
+                && sp.getMainHandItem().getItem() != ModItems.GAP_TERMINAL.get()
+                && sp.getOffhandItem().getItem() != ModItems.GAP_TERMINAL.get()) {
+            return;
+        }
+        send(sp, true);
     }
 
     public static void send(ServerPlayer sp, boolean open) {
-        ModNetwork.sendToPlayer(sp, new TerminalSnapshotPacket(build(sp), open));
+        // 超大仓库（几千堆东西 / 一堆塞满 NBT 的潜影盒）会把包撑到客户端直接掉线。
+        // 做法：整个快照只构建一次，超限就在快照对象上按体积裁剪（不再反复重建、也不再反复
+        // 解析全部绑定和复制女仆背包），最后给玩家一句“只显示了一部分”。
+        TerminalSnapshot full = build(sp, MAX_TOTAL_STACKS);
+        TerminalSnapshot snap = full;
+        int size = encodedSize(full);
+        boolean truncated = false;
+        if (size > MAX_SNAPSHOT_BYTES) {
+            truncated = true;
+            int stacks = countStacks(full);
+            int maidKeep = countNonEmpty(full.maidSlots);
+            // ① 先砍容器物品堆：按「字节比例」估算保留几堆，每轮至少减半，两三下就收敛
+            while (size > MAX_SNAPSHOT_BYTES && stacks > 0) {
+                long guess = (long) stacks * MAX_SNAPSHOT_BYTES / Math.max(1, size);
+                stacks = (int) Math.max(0L, Math.min(stacks - 1L, Math.max(stacks / 2L, guess)));
+                snap = trimmed(full, stacks, maidKeep);
+                size = encodedSize(snap);
+            }
+            // ② 容器物品砍光还超：女仆背包那 38 格也参与裁剪
+            //   （38 个塞满 NBT 的潜影盒同样能撑爆 1 MB，只砍容器是不够的）
+            while (size > MAX_SNAPSHOT_BYTES && maidKeep > 0) {
+                maidKeep = Math.max(0, Math.min(maidKeep - 1, maidKeep / 2));
+                snap = trimmed(full, stacks, maidKeep);
+                size = encodedSize(snap);
+            }
+            // ③ 实在编不出来（某个物品的 NBT 写坏了）：至少发一个结构完整的空界面，
+            //   并且明确告诉玩家“没显示全”，别让他以为东西丢了
+            if (size > MAX_SNAPSHOT_BYTES) {
+                snap = trimmed(full, 0, 0);
+            }
+        }
+        ModNetwork.sendToPlayer(sp, new TerminalSnapshotPacket(snap, open));
+        // 提示最多 5 秒一次：每次点击都弹一遍会很吵（尤其是自动刷新每秒一次）
+        if (truncated && GapStore.allowAction(sp, GapStore.BUCKET_HINT, 100)) {
+            message(sp, "msg.maidgap.truncated", ChatFormatting.YELLOW, null);
+        }
+    }
+
+    /** 快照里一共列了多少堆物品（用来估算要裁掉多少）。 */
+    private static int countStacks(TerminalSnapshot snap) {
+        int n = 0;
+        for (TerminalSnapshot.Entry e : snap.entries) {
+            n += e.stacks.size();
+        }
+        return n;
+    }
+
+    private static int countNonEmpty(List<ItemStack> list) {
+        int n = 0;
+        for (ItemStack st : list) {
+            if (!st.isEmpty()) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /**
+     * 复制一份快照，只保留前 keepStacks 堆容器物品、前 keepMaid 个非空女仆背包格。
+     * 只是重新引用已有的物品对象，不重新读任何容器，所以裁剪几十次也很便宜。
+     */
+    private static TerminalSnapshot trimmed(TerminalSnapshot src, int keepStacks, int keepMaid) {
+        TerminalSnapshot s = new TerminalSnapshot();
+        s.pickupAmount = src.pickupAmount;
+        s.slotLocks = src.slotLocks;
+        s.autoRefill = src.autoRefill;
+        s.maxContainers = src.maxContainers;
+        s.holdingGap = src.holdingGap;
+        s.maidToChest = src.maidToChest;
+        s.blacklist = src.blacklist;
+        s.tagMatch = src.tagMatch;
+        s.viaTerminal = src.viaTerminal;
+        s.maidName = src.maidName;
+        s.linkMissing = src.linkMissing;
+        s.maidHasNoGap = src.maidHasNoGap;
+        s.notOwner = src.notOwner;
+        // 过滤名单固定 9 格，体积可以忽略，不参与裁剪
+        s.filters = src.filters;
+        s.maidSlots = trimSlots(src.maidSlots, keepMaid);
+        int left = Math.max(0, keepStacks);
+        for (TerminalSnapshot.Entry e : src.entries) {
+            TerminalSnapshot.Entry c = new TerminalSnapshot.Entry(e.binding, e.status);
+            c.blockId = e.blockId;
+            // 储罐数量受绑定容器个数限制，体积可控，原样保留
+            c.tankSlots.addAll(e.tankSlots);
+            c.fluids.addAll(e.fluids);
+            c.capacities.addAll(e.capacities);
+            int n = Math.min(e.stacks.size(), left);
+            for (int i = 0; i < n; i++) {
+                c.slots.add(e.slots.get(i));
+                c.stacks.add(e.stacks.get(i));
+            }
+            left -= n;
+            s.entries.add(c);
+        }
+        return s;
+    }
+
+    /** 保留前 keep 个非空格，其余格清空（格数不变，界面布局不受影响）。 */
+    private static List<ItemStack> trimSlots(List<ItemStack> src, int keep) {
+        if (src.isEmpty()) {
+            return src;
+        }
+        List<ItemStack> out = new ArrayList<>(src.size());
+        int kept = 0;
+        for (ItemStack st : src) {
+            if (!st.isEmpty()) {
+                if (kept >= keep) {
+                    out.add(ItemStack.EMPTY);
+                    continue;
+                }
+                kept++;
+            }
+            out.add(st);
+        }
+        return out;
+    }
+
+    /** 这个快照编码成网络包大概多大（字节）。 */
+    private static int encodedSize(TerminalSnapshot snap) {
+        net.minecraft.network.FriendlyByteBuf probe =
+                new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+        try {
+            snap.encode(probe);
+            return probe.writerIndex();
+        } catch (RuntimeException ex) {
+            // 个别物品的 NBT 编不出来（模组自己写坏了 NBT）时，按“已经超限”处理，走精简路线
+            return Integer.MAX_VALUE;
+        } finally {
+            probe.release();
+        }
     }
 
     // ------------------------------------------------------------------
@@ -415,13 +584,30 @@ public final class ContainerService {
     // ------------------------------------------------------------------
 
     public static void handleAction(ServerPlayer sp, int type, int entryIndex, int slot) {
-        // 只接受界面真的会发的动作：坏包/旧客户端发来的乱码类型直接忽略，别让它走到别的分支
+        // 旁观者没有背包也没有交互权，任何动作都不该生效
+        if (sp.isSpectator()) {
+            return;
+        }
+        // 只接受界面真的会发的动作：坏包/旧客户端发来的乱码类型直接丢弃。
+        // 注意这里不能回包——一包回一次「build + 编码 + 发送」就等于给了作弊客户端
+        // 一个免限速的放大入口（连发 type=99 就能把服务端拖垮）。
         if (type < 0 || type > ACT_REFRESH) {
+            return;
+        }
+        // 限速：普通动作与刷新各记各的（共用一张表会让「拿取后马上刷新」被误挡）
+        if (type == ACT_REFRESH) {
+            if (!GapStore.allowAction(sp, GapStore.BUCKET_REFRESH, REFRESH_MIN_TICKS)) {
+                // 被挡掉时给一句提示，否则玩家只会觉得“刷新按钮坏了”。
+                // 提示本身也要限流：否则作弊客户端狂发刷新包，每个包都能换回一个提示包。
+                if (GapStore.allowAction(sp, GapStore.BUCKET_HINT, 100)) {
+                    message(sp, "msg.maidgap.too_fast", ChatFormatting.GRAY, null);
+                }
+                return;
+            }
             send(sp, false);
             return;
         }
-        if (type == ACT_REFRESH) {
-            send(sp, false);
+        if (!GapStore.allowAction(sp, GapStore.BUCKET_ACTION, ACTION_MIN_TICKS)) {
             return;
         }
         if (type == ACT_CYCLE_PICKUP) {
@@ -469,7 +655,8 @@ public final class ContainerService {
             }
             case ACT_ADD_FILTER_INV -> {
                 ItemStack sample = slot >= 0 && slot < 36 ? sp.getInventory().getItem(slot) : ItemStack.EMPTY;
-                if (!sample.isEmpty() && !GapItemData.addFilter(gap, sample)) {
+                if (!sample.isEmpty() && !GapItemData.containsFilter(gap, sample)
+                        && !GapItemData.addFilter(gap, sample)) {
                     message(sp, "msg.maidgap.filter_full", ChatFormatting.RED, null);
                 }
                 syncGap(sp, target);
@@ -495,7 +682,8 @@ public final class ContainerService {
                             && slot >= 0 && slot < r.items.getSlots()) {
                         sample = r.items.getStackInSlot(slot);
                     }
-                    if (!sample.isEmpty() && !GapItemData.addFilter(gap, sample)) {
+                    if (!sample.isEmpty() && !GapItemData.containsFilter(gap, sample)
+                            && !GapItemData.addFilter(gap, sample)) {
                         message(sp, "msg.maidgap.filter_full", ChatFormatting.RED, null);
                     }
                 }
@@ -551,16 +739,48 @@ public final class ContainerService {
                 if (r.status == TerminalSnapshot.STATUS_OK && r.fluids != null && slot >= 0 && slot < r.fluids.getTanks()) {
                     FluidStack tank = r.fluids.getFluidInTank(slot);
                     if (!tank.isEmpty()) {
-                        FluidStack sim = r.fluids.drain(new FluidStack(tank.getFluid(), 1000), IFluidHandler.FluidAction.SIMULATE);
-                        ItemStack bucket = FluidUtil.getFilledBucket(sim);
-                        if (sim.isEmpty() || bucket.isEmpty()) {
-                            sp.displayClientMessage(Component.translatable("msg.maidgap.no_bucket", tank.getDisplayName())
+                        // 关键：必须真的有「一整桶」才换桶。
+                        // 只判断 drain 结果非空是不够的——罐里剩 1 mB 时 drain 也会成功返回，
+                        // 那么每次都能换出一整桶、倒回去再换，等于无限刷液体。
+                        // 这里用 < 而不是 !=：大罐子（比如 8000 mB 的储罐）本来就比一桶多，照样能换。
+                        if (tank.getAmount() < BUCKET_VOLUME) {
+                            sp.displayClientMessage(Component.translatable("msg.maidgap.not_enough_fluid",
+                                            tank.getDisplayName(), String.valueOf(tank.getAmount()),
+                                            String.valueOf(BUCKET_VOLUME))
                                     .withStyle(ChatFormatting.RED), true);
                         } else {
-                            r.fluids.drain(sim, IFluidHandler.FluidAction.EXECUTE);
-                            ItemHandlerHelper.giveItemToPlayer(sp, bucket);
-                            r.blockEntity.setChanged();
-                            feedbackExtract(sp);
+                            FluidStack oneBucket = new FluidStack(tank.getFluid(), BUCKET_VOLUME);
+                            ItemStack bucket = FluidUtil.getFilledBucket(oneBucket);
+                            if (bucket.isEmpty()) {
+                                sp.displayClientMessage(Component.translatable("msg.maidgap.no_bucket",
+                                                tank.getDisplayName())
+                                        .withStyle(ChatFormatting.RED), true);
+                            } else {
+                                FluidStack drained = r.fluids.drain(oneBucket, IFluidHandler.FluidAction.EXECUTE);
+                                if (drained.getAmount() != BUCKET_VOLUME) {
+                                    // 储罐没给足一整桶（自定义储罐可能这样）：把抽出来的还回去，绝不多给物品。
+                                    // 用 != 而不是 <：多给同样不对（否则一样能刷）。
+                                    int returned = 0;
+                                    if (!drained.isEmpty()) {
+                                        returned = r.fluids.fill(drained, IFluidHandler.FluidAction.EXECUTE);
+                                    }
+                                    if (returned < drained.getAmount()) {
+                                        // 回滚失败：液体丢了，但绝不能因此给物品（丢液比复制液安全）
+                                        r.blockEntity.setChanged();
+                                        message(sp, "msg.maidgap.rollback_failed", ChatFormatting.RED, null);
+                                    } else {
+                                        sp.displayClientMessage(Component.translatable(
+                                                        "msg.maidgap.drain_short",
+                                                        tank.getDisplayName(), String.valueOf(drained.getAmount()),
+                                                        String.valueOf(BUCKET_VOLUME))
+                                                .withStyle(ChatFormatting.RED), true);
+                                    }
+                                } else {
+                                    ItemHandlerHelper.giveItemToPlayer(sp, bucket);
+                                    r.blockEntity.setChanged();
+                                    feedbackExtract(sp);
+                                }
+                            }
                         }
                     }
                 } else {
@@ -602,6 +822,10 @@ public final class ContainerService {
 
     public static void autoRefill(ServerPlayer sp) {
         if (!MaidGapConfig.AUTO_REFILL_ENABLED.get() || !GapStore.autoRefillOn(sp)) {
+            return;
+        }
+        // 旁观者/已死的玩家不该被偷偷塞东西
+        if (sp.isSpectator() || sp.isDeadOrDying()) {
             return;
         }
         String dim = sp.level().dimension().location().toString();
@@ -649,7 +873,9 @@ public final class ContainerService {
         List<ItemStack> next = new ArrayList<>();
         for (int s = 0; s < mainSlots; s++) {
             ItemStack cur = inv.getStackInSlot(s);
-            if (cur.isEmpty() || cur.getCount() > threshold) {
+            // 不可堆叠的东西（剑、镐、盔甲…）数量永远是 1，不该被当成“快用完”去补，
+            // 否则记忆表会被这些永久的 1 占满，真正要补的消耗品反而挤不进去
+            if (cur.isEmpty() || cur.getMaxStackSize() <= 1 || cur.getCount() > threshold) {
                 continue;
             }
             if (!containsSame(next, cur)) {
@@ -662,6 +888,11 @@ public final class ContainerService {
             if (next.size() >= 24) {
                 break;
             }
+            // 旧存档里记下的不可堆叠物品（剑/镐/盔甲…）不沿用：它们数量永远是 1，
+            // 会一直占着 24 个记忆位，把真正要补的消耗品挤掉
+            if (old.getMaxStackSize() <= 1) {
+                continue;
+            }
             if (containsSame(next, old)) {
                 continue;
             }
@@ -669,13 +900,16 @@ public final class ContainerService {
                 next.add(old);
             }
         }
-        GapStore.setRefillMemory(sp, next);
+        // 只在记忆表真的变了才写玩家数据：每 2 秒无脑写一次会把玩家存档一直标脏
+        if (!sameStacks(next, memory)) {
+            GapStore.setRefillMemory(sp, next);
+        }
 
         int refilled = 0;
         // —— ① 背包里还剩 1~阈值 个：补满一组 ——
         for (int s = 0; s < mainSlots && refilled < 3; s++) {
             ItemStack cur = inv.getStackInSlot(s);
-            if (cur.isEmpty() || cur.getCount() > threshold) {
+            if (cur.isEmpty() || cur.getMaxStackSize() <= 1 || cur.getCount() > threshold) {
                 continue;
             }
             if (pullInto(sp, sources, cur, cur.getMaxStackSize() - cur.getCount())) {
@@ -687,6 +921,9 @@ public final class ContainerService {
         for (ItemStack proto : next) {
             if (refilled >= 3) {
                 break;
+            }
+            if (proto.getMaxStackSize() <= 1) {
+                continue; // 旧存档里记下的不可堆叠物品，不再补
             }
             if (countOf(inv, proto) != 0) {
                 continue; // 还在背包里，上面补满那条路已经处理过
@@ -817,6 +1054,19 @@ public final class ContainerService {
         return n;
     }
 
+    /** 两个样本表是不是同一批物品（顺序无关，只看种类）。 */
+    private static boolean sameStacks(List<ItemStack> a, List<ItemStack> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (ItemStack x : a) {
+            if (!containsSame(b, x)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static boolean containsSame(List<ItemStack> list, ItemStack st) {
         for (ItemStack o : list) {
             if (ItemStack.isSameItemSameTags(o, st)) {
@@ -876,9 +1126,14 @@ public final class ContainerService {
     // 小工具
     // ------------------------------------------------------------------
 
-    /** 物品 NBT 变更后推一次容器同步，客户端手持物品的提示等立即更新。 */
-    private static void syncHeld(ServerPlayer sp) {
-        if (sp.containerMenu != null) {
+    /**
+     * 物品 NBT 变更后推一次容器同步，客户端手持物品的提示等立即更新。
+     * 公开：终端链接/解链（{@link cn.blockforge.generated.maidbettergap.item.GapTerminalItem}、
+     * {@link cn.blockforge.generated.maidbettergap.compat.tlm.MaidLinkService}）改完 NBT 也要调它，
+     * 否则 tooltip 会一直停在“未链接”，直到开一次容器或重登。
+     */
+    public static void syncHeld(ServerPlayer sp) {
+        if (sp != null && sp.containerMenu != null) {
             sp.containerMenu.broadcastChanges();
         }
     }

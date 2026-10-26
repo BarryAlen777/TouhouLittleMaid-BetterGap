@@ -186,11 +186,20 @@ public final class GapInteractions {
         }
     }
 
-    /** 放置方块：方块从背包里消失了，也该补。 */
+    /** 放置方块：方块从背包里消失了，也该补。记“真的放下去的那块”，副手放置也不会记错。 */
     @SubscribeEvent
     public static void onPlaceBlock(BlockEvent.EntityPlaceEvent event) {
         if (event.getEntity() instanceof ServerPlayer sp) {
-            GapStore.rememberUsed(sp, sp.getMainHandItem());
+            // 优先用手上那一堆当样本（含 NBT）：直接 new ItemStack(方块) 会把潜影盒、带内容的箱子、
+            // 带图案的旗帜都记成“白板物品”，之后补货就会拉出一个空潜影盒而不是刚放下的那个。
+            ItemStack held = sp.getMainHandItem();
+            ItemStack off = sp.getOffhandItem();
+            ItemStack placed = held.getItem() == event.getPlacedBlock().getBlock().asItem() ? held.copy()
+                    : off.getItem() == event.getPlacedBlock().getBlock().asItem() ? off.copy()
+                    : new ItemStack(event.getPlacedBlock().getBlock().asItem());
+            if (!placed.isEmpty()) {
+                GapStore.rememberUsed(sp, placed);
+            }
         }
     }
 }
