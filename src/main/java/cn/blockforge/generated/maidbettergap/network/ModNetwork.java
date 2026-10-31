@@ -10,7 +10,12 @@ import net.minecraftforge.network.simple.SimpleChannel;
 
 public final class ModNetwork {
 
-    private static final String PROTOCOL = "1";
+    /**
+     * 握手暗号：客户端/服务端连接时核对，不一致就拒绝连接（明确提示版本不匹配）。
+     * 【规矩】任何包格式改动（尤其 TerminalSnapshot 的字段增删）必须同步 +1，
+     * 否则新旧两端会按不同格式读同一串字节，解码错位、轻则掉线重则崩溃。
+     */
+    private static final String PROTOCOL = "3";
     public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
             ResourceLocation.fromNamespaceAndPath(GeneratedMod.MOD_ID, "main"),
             () -> PROTOCOL,

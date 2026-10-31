@@ -41,13 +41,15 @@ public class GapTerminalItem extends Item {
                 // 以前只要潜行右键就解链，而潜行右键方块正是「绑定容器」的操作，
                 // 玩家想绑箱子时会顺手把自己的链接清掉（tooltip 上写的是“潜力右键空气”）。
                 if (GapLinkData.hasLink(stack) && lookingAtAir(player)) {
+                    // 只解除“当前这只”：列表里还有别的女仆时她们不受影响（要删谁用界面里的删除模式）
+                    String name = GapLinkData.savedName(stack);
                     GapLinkData.unlink(stack);
                     if (player instanceof ServerPlayer sp) {
                         // 推一次同步，客户端 tooltip 立刻变回“尚未链接”
                         ContainerService.syncHeld(sp);
                     }
-                    player.displayClientMessage(
-                            Component.translatable("msg.maidgap.unlinked").withStyle(ChatFormatting.GRAY), true);
+                    player.displayClientMessage(Component.translatable("msg.maidgap.unlinked_one",
+                            name.isEmpty() ? "?" : name).withStyle(ChatFormatting.GRAY), true);
                 }
             } else {
                 // 服务端把目标隙间（手里 or 链接女仆饰品栏里）打包推给客户端开界面
@@ -71,6 +73,11 @@ public class GapTerminalItem extends Item {
             tooltip.add(Component.translatable("maidgap.tt.linked",
                             name.isEmpty() ? "?" : name)
                     .withStyle(ChatFormatting.LIGHT_PURPLE));
+            int count = GapLinkData.maids(stack).size();
+            if (count > 1) {
+                tooltip.add(Component.translatable("maidgap.tt.linked_n", String.valueOf(count))
+                        .withStyle(ChatFormatting.GRAY));
+            }
         } else {
             tooltip.add(Component.translatable("maidgap.tt.notlinked").withStyle(ChatFormatting.GRAY));
         }

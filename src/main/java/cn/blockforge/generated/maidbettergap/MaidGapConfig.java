@@ -35,10 +35,14 @@ public final class MaidGapConfig {
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> EXTRA_GAP_ITEMS;
     public static final ForgeConfigSpec.BooleanValue ENHANCE_ORIGINAL_GAP;
     public static final ForgeConfigSpec.IntValue MAID_IO_INTERVAL;
+    public static final ForgeConfigSpec.BooleanValue SOPH_BACKPACKS;
 
     // —— 类别匹配（按物品标签归类） ——
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_NAMESPACES;
     public static final ForgeConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_BLACKLIST;
+
+    // —— 隙间终端 ——
+    public static final ForgeConfigSpec.IntValue TERMINAL_MAID_LIMIT;
 
     static {
         ForgeConfigSpec.Builder b = new ForgeConfigSpec.Builder();
@@ -92,6 +96,14 @@ public final class MaidGapConfig {
         MAID_IO_INTERVAL = b
                 .comment("女仆戴着隙间自动搬运的间隔（游戏刻，20 tick = 1 秒；原版是 100）。")
                 .defineInRange("maid_io_interval_ticks", 100, 20, 600);
+        SOPH_BACKPACKS = b
+                .comment("把女仆身上「精妙背包」里的物品也算进自动搬运（需要同时装「女仆精妙」maid_sophisticated",
+                        "和「精妙背包」sophisticatedbackpacks，缺任何一个就自动跳过，不会报错）。",
+                        "开启后：女仆->箱子 会把背包里的东西也送进容器；",
+                        "箱子->女仆 会先塞满女仆自己的背包，塞不下的才溢出进精妙背包。",
+                        "注意：槽位锁定只管女仆自己的 38 格，不约束精妙背包的内容物；",
+                        "想让女仆完全停搬，关掉总开关或把搬运方向切走。")
+                .define("sophisticated_backpacks", true);
         EXTRA_GAP_ITEMS = b
                 .comment("这些物品 ID 也会被当作“隙间”：可进女仆饰品栏、潜行+右键绑定、按 G 打开增强终端。",
                         "默认包含车万女仆原版隙间。例如: [\"touhou_little_maid:wireless_io\", \"some_maid_mod:maid_gap\"]")
@@ -138,6 +150,13 @@ public final class MaidGapConfig {
                                 "minecraft:enchantable/weapon",
                                 "forge:spawn_egg"),
                         o -> o instanceof String s && s.indexOf(':') > 0);
+        b.pop();
+
+        b.comment("隙间终端 (gap terminal)").push("terminal");
+        TERMINAL_MAID_LIMIT = b
+                .comment("一个隙间终端最多能链接多少只女仆（终端界面左侧列表的上限）。",
+                        "女仆多了就调大这个值；界面里最多一屏显示 16 只，多出来的用滚轮上下翻。")
+                .defineInRange("terminal_maid_limit", 16, 1, 64);
         b.pop();
 
         SPEC = b.build();

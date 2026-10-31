@@ -4,6 +4,7 @@ import cn.blockforge.generated.maidbettergap.MaidGapConfig;
 import cn.blockforge.generated.maidbettergap.gap.Binding;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import cn.blockforge.generated.maidbettergap.gap.GapItemData;
+import cn.blockforge.generated.maidbettergap.compat.soph.SophBackpackBridge;
 import com.github.tartaricacid.touhoulittlemaid.api.bauble.IMaidBauble;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import net.minecraft.core.BlockPos;
@@ -74,13 +75,20 @@ public final class EnhancedGapBauble implements IMaidBauble {
     }
 
     private static void doTick(EntityMaid maid, ItemStack baubleItem) {
-        if (baubleItem.isEmpty() || maid.guiOpening) {
+        if (baubleItem.isEmpty()) {
             return;
         }
         // MC 继承成员统一经 Entity 访问，保证重混淆安全
         Entity asEntity = maid;
         Level level = asEntity.level();
         if (level.isClientSide()) {
+            return;
+        }
+        // 升级迁移兜底（R0）：净化必须放在 guiOpening / 搬运间隔检查之前。
+        // 玩家打开女仆界面时，车万女仆会把饰品栏物品同步给客户端；如果等到 100 tick 的那一轮
+        // 才洗，旧存档里的脏名单就先发出去了。净化本身干净时几乎零成本（不写 NBT）。
+        GapItemData.sanitizeFilters(baubleItem);
+        if (maid.guiOpening) {
             return;
         }
         int interval = Math.max(20, MaidGapConfig.MAID_IO_INTERVAL.get());
@@ -95,13 +103,17 @@ public final class EnhancedGapBauble implements IMaidBauble {
         }
 
         boolean maidToChest = GapItemData.isMaidToChest(baubleItem);
-        java.util.function.Predicate<ItemStack> allowed = GapItemData.filterPredicate(baubleItem);
         CombinedInvWrapper maidInv = maid.getAvailableInv(false);
         boolean[] slotLock = GapItemData.slotLocks(baubleItem, maidInv.getSlots());
         // 终端里设置的「拿取数量」同样限制女仆每轮搬运：每个来源槽最多搬这么多
         int cap = Math.max(1, GapItemData.pickupAmount(baubleItem));
 
         boolean moved = false;
+        // 女仆身上「精妙背包」的内部物品栏（没装女仆精妙/精妙背包时是空列表）。
+        // 注意这是背包*内容物*，不在 maidInv 里，所以之前只会搬女仆自带背包和物品栏。
+        List<IItemHandler> backpacks = MaidGapConfig.SOPH_BACKPACKS.get()
+                ? SophBackpackBridge.wornBackpacks(asEntity)
+                : java.util.Collections.emptyList();
         for (Binding b : bindings) {
             if (b.isFluid()) {
                 continue; // 液体只走玩家终端取桶，女仆不搬流体
@@ -110,10 +122,15 @@ public final class EnhancedGapBauble implements IMaidBauble {
             if (chest == null) {
                 continue;
             }
+            // 每个容器用自己的过滤名单：这个容器单独设过名单就只认它自己的，
+            // 没设过就沿用隙间上的共用名单（老存档行为不变）。
+            java.util.function.Predicate<ItemStack> allowed = GapItemData.filterPredicate(baubleItem, b);
             if (maidToChest) {
                 moved |= maidToChest(asEntity, maidInv, chest, allowed, slotLock, cap);
+                moved |= backpacksToChest(asEntity, backpacks, chest, allowed, cap);
             } else {
                 moved |= chestToMaid(asEntity, chest, maidInv, allowed, slotLock, cap);
+                moved |= chestToBackpacks(asEntity, chest, backpacks, allowed, cap);
             }
         }
         if (moved) {
@@ -222,6 +239,80 @@ public final class EnhancedGapBauble implements IMaidBauble {
             returnTo(maidEntity, rest, chest, i); // 女仆背包塞不下的放回箱子
         }
         return moved;
+    }
+
+    /**
+     * 女仆身上「精妙背包」里的东西 -> 容器。
+     * 背包内容物不在 maidInv 里，所以单独走一遍；白名单、类别匹配、拿取数量一视同仁。
+     * 槽位锁定只针对女仆自己的 38 格，不作用于背包内部，这里不传 slotLock。
+     */
+    private static boolean backpacksToChest(Entity maidEntity, List<IItemHandler> backpacks, IItemHandler chest,
+                                            java.util.function.Predicate<ItemStack> allowed, int cap) {
+        boolean moved = false;
+        for (IItemHandler pack : backpacks) {
+            for (int i = 0; i < pack.getSlots(); i++) {
+                ItemStack stack = pack.getStackInSlot(i);
+                if (stack.isEmpty() || !allowed.test(stack)) {
+                    continue;
+                }
+                int want = Math.min(cap, stack.getCount());
+                if (want <= 0) {
+                    continue;
+                }
+                // 与 maidToChest 同样的顺序：先从背包取出，再放进容器
+                ItemStack got = pack.extractItem(i, want, false);
+                if (got.isEmpty()) {
+                    continue;
+                }
+                ItemStack rest = ItemHandlerHelper.insertItemStacked(chest, got, false);
+                if (rest.getCount() < got.getCount()) {
+                    moved = true;
+                }
+                returnTo(maidEntity, rest, pack, i); // 塞不进箱子的放回背包，绝不丢
+            }
+        }
+        return moved;
+    }
+
+    /** 容器 -> 女仆身上「精妙背包」：先往背包里塞，塞不下的再退回去。 */
+    private static boolean chestToBackpacks(Entity maidEntity, IItemHandler chest, List<IItemHandler> backpacks,
+                                            java.util.function.Predicate<ItemStack> allowed, int cap) {
+        if (backpacks.isEmpty()) {
+            return false;
+        }
+        boolean moved = false;
+        for (int i = 0; i < chest.getSlots(); i++) {
+            ItemStack stack = chest.getStackInSlot(i);
+            if (stack.isEmpty() || !allowed.test(stack)) {
+                continue;
+            }
+            int want = Math.min(cap, stack.getCount());
+            if (want <= 0) {
+                continue;
+            }
+            ItemStack got = chest.extractItem(i, want, false);
+            if (got.isEmpty()) {
+                continue;
+            }
+            ItemStack rest = insertIntoBackpacks(backpacks, got);
+            if (rest.getCount() < got.getCount()) {
+                moved = true;
+            }
+            returnTo(maidEntity, rest, chest, i); // 背包塞不下的放回容器
+        }
+        return moved;
+    }
+
+    /** 依次往各个背包里塞，返回没塞进去的剩余部分。 */
+    private static ItemStack insertIntoBackpacks(List<IItemHandler> backpacks, ItemStack stack) {
+        ItemStack remaining = stack;
+        for (IItemHandler pack : backpacks) {
+            remaining = ItemHandlerHelper.insertItemStacked(pack, remaining, false);
+            if (remaining.isEmpty()) {
+                return ItemStack.EMPTY;
+            }
+        }
+        return remaining;
     }
 
     /**

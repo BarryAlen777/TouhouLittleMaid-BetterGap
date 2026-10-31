@@ -33,6 +33,7 @@ import net.minecraftforge.items.wrapper.InvWrapper;
 import net.minecraftforge.registries.ForgeRegistries;
 import net.minecraftforge.fml.ModList;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -82,6 +83,14 @@ public final class ContainerService {
     public static final int ACT_ADD_FILTER_INV = 11;
     /** 只是刷新界面（不发任何改动）。 */
     public static final int ACT_REFRESH = 12;
+    /** 切换终端当前管理的女仆（entryIndex = 女仆列表下标）。 */
+    public static final int ACT_SELECT_MAID = 13;
+    /** 把一只女仆移出终端列表（entryIndex = 女仆列表下标）。 */
+    public static final int ACT_REMOVE_MAID = 14;
+    /** 切换这个容器的名单是“共用”还是“独立”（entryIndex = 容器下标）。 */
+    public static final int ACT_TOGGLE_FILTER_SCOPE = 15;
+    /** 允许的最大动作号（坏包/旧客户端发来的乱码直接丢弃）。 */
+    private static final int MAX_ACTION = ACT_TOGGLE_FILTER_SCOPE;
 
     private ContainerService() {}
 
@@ -132,6 +141,30 @@ public final class ContainerService {
             return off;
         }
         return ItemStack.EMPTY;
+    }
+
+    /** 玩家手里的「隙间终端」（主手优先，其次副手）；没有返回空。 */
+    public static ItemStack heldTerminal(ServerPlayer player) {
+        ItemStack main = player.getMainHandItem();
+        if (main.getItem() == ModItems.GAP_TERMINAL.get()) {
+            return main;
+        }
+        ItemStack off = player.getOffhandItem();
+        return off.getItem() == ModItems.GAP_TERMINAL.get() ? off : ItemStack.EMPTY;
+    }
+
+    /**
+     * 终端里选中第 index 个容器；越界（快照过期、刚解绑、坏包）返回 null。
+     * 【规矩】名单类动作拿到 null 必须直接拒绝并刷新界面，绝不能“回落共用名单”——
+     * 否则玩家点一下已经消失的容器，就会悄悄改掉另一套全局生效的名单。
+     */
+    @Nullable
+    private static Binding filterBinding(ItemStack gap, int index, String dim) {
+        List<Binding> list = GapItemData.bindings(gap, dim);
+        if (index < 0 || index >= list.size()) {
+            return null;
+        }
+        return list.get(index);
     }
 
     /** 车万女仆是否加载（终端链接分支的类加载保护）。 */
@@ -237,9 +270,10 @@ public final class ContainerService {
         switch (result) {
             case BOUND -> {
                 feedbackBind(player, level, pos);
-                message(player, "msg.maidgap.bound", ChatFormatting.LIGHT_PURPLE,
-                        describe(pos) + " · " + state.getBlock().getName().getString()
-                                + (kind == Binding.KIND_FLUID ? " (储罐)" : ""));
+                // “（储罐）”走 lang，不再硬编码中文（英文环境要能翻译）
+                message(player, kind == Binding.KIND_FLUID ? "msg.maidgap.bound_tank" : "msg.maidgap.bound",
+                        ChatFormatting.LIGHT_PURPLE,
+                        describe(pos) + " · " + state.getBlock().getName().getString());
             }
             case UNBOUND -> {
                 feedbackUnbind(player);
@@ -376,7 +410,12 @@ public final class ContainerService {
         s.notOwner = target.notOwner;
         s.maidName = target.maidName;
         s.holdingGap = !gap.isEmpty();
+        // 界面标题用：手里是哪件隙间就显示哪件，别再让「隙间·增强」的界面顶着「终端」的名字
+        s.gapName = gap.isEmpty() ? "" : gap.getHoverName().getString();
         if (s.holdingGap) {
+            // 服务端读名单前先把旧版脏数据洗掉并写回（R0 的「打开终端」路径，
+            // 一次覆盖共用 + 全部独立名单；处理过就有标记，后续构建不再扫描）
+            GapItemData.sanitizeFilters(gap);
             s.maidToChest = GapItemData.isMaidToChest(gap);
             s.blacklist = GapItemData.isBlacklist(gap);
             s.tagMatch = GapItemData.isTagMatch(gap);
@@ -390,12 +429,34 @@ public final class ContainerService {
                     .maidInvDisplay(target.maid);
         }
 
+        // 终端里存着的女仆列表（拿着终端才有；女仆不在附近也照样列出来，方便切换/删除）
+        ItemStack terminal = heldTerminal(user);
+        if (!terminal.isEmpty()) {
+            s.maidLimit = MaidGapConfig.TERMINAL_MAID_LIMIT.get();
+            java.util.UUID active = GapLinkData.activeUuid(terminal);
+            s.activeMaid = active == null ? "" : active.toString();
+            if (tlmLoaded()) {
+                try {
+                    s.maids = MaidLinkService.maidStates(user, terminal);
+                } catch (LinkageError | RuntimeException err) {
+                    // 车万女仆版本对不上 / 数据没就绪：列表留空，终端其余功能照常可用
+                    // （maidStates 内部已逐只兜底，走到这里说明是整表级的意外）
+                    s.maids = new ArrayList<>();
+                }
+            }
+        }
+
         String dim = user.level().dimension().location().toString();
         int listed = 0;
         for (Binding b : s.holdingGap ? GapItemData.bindings(gap, dim) : List.<Binding>of()) {
             TerminalSnapshot.Entry e = new TerminalSnapshot.Entry(b, TerminalSnapshot.STATUS_OK);
             Resolved r = resolve(user, b);
             e.status = r.status;
+            // 这个容器实际生效的名单：有自己的用自己，没有的沿用共用名单
+            e.ownFilter = GapItemData.hasOwnFilter(gap, b);
+            e.blacklist = GapItemData.isBlacklist(gap, b);
+            e.tagMatch = GapItemData.isTagMatch(gap, b);
+            e.filters = GapItemData.filters(gap, b);
             if (r.blockEntity != null) {
                 ResourceLocation blockKey = ForgeRegistries.BLOCKS.getKey(r.blockEntity.getBlockState().getBlock());
                 e.blockId = blockKey == null ? "" : blockKey.toString();
@@ -477,11 +538,67 @@ public final class ContainerService {
                 snap = trimmed(full, 0, 0);
             }
         }
-        ModNetwork.sendToPlayer(sp, new TerminalSnapshotPacket(snap, open));
+        // 发送兜底：编码整个动作都可能抛异常（个别模组物品把 NBT 写坏了、
+        // 或包体触到通道硬上限）。异常绝不能顺着 GapActionPacket/OpenTerminalPacket
+        // 冒进服务器线程，退一步发“只剩结构”的最小快照，界面空但不再崩。
+        boolean reduced = false;
+        try {
+            ModNetwork.sendToPlayer(sp, new TerminalSnapshotPacket(snap, open));
+        } catch (RuntimeException | LinkageError ex) {
+            cn.blockforge.generated.maidbettergap.GeneratedMod.LOGGER
+                    .warn("[maid_better_gap] 终端快照发送失败，改发最小快照。", ex);
+            try {
+                ModNetwork.sendToPlayer(sp, new TerminalSnapshotPacket(minimalSnapshot(full), open));
+                reduced = true;
+            } catch (RuntimeException | LinkageError ex2) {
+                // 连最小快照都发不出去就不发了（几乎不可能：里面已没有任何物品数据），
+                // 总之绝不让异常离开这里
+                cn.blockforge.generated.maidbettergap.GeneratedMod.LOGGER
+                        .warn("[maid_better_gap] 最小快照也发送失败，本次终端刷新已放弃。", ex2);
+            }
+        }
         // 提示最多 5 秒一次：每次点击都弹一遍会很吵（尤其是自动刷新每秒一次）
         if (truncated && GapStore.allowAction(sp, GapStore.BUCKET_HINT, 100)) {
             message(sp, "msg.maidgap.truncated", ChatFormatting.YELLOW, null);
         }
+        // 走到最小快照兜底时界面是空的，玩家容易以为东西丢了——明确告诉他只是显示精简（R8）
+        if (reduced && GapStore.allowAction(sp, GapStore.BUCKET_HINT, 100)) {
+            message(sp, "msg.maidgap.snapshot_reduced", ChatFormatting.YELLOW, null);
+        }
+    }
+
+    /**
+     * 极端兜底用的最小快照：只保留结构与文本字段，物品/流体/名单全部清空。
+     * 正常永远走不到这里；只有连裁剪后的快照编码都抛异常（某个物品 NBT 写坏了）才发它，
+     * 保证玩家至少能打开一个“空的”终端界面，而不是收包崩客户端。
+     */
+    private static TerminalSnapshot minimalSnapshot(TerminalSnapshot src) {
+        TerminalSnapshot s = new TerminalSnapshot();
+        s.pickupAmount = src.pickupAmount;
+        s.slotLocks = src.slotLocks;
+        s.autoRefill = src.autoRefill;
+        s.maxContainers = src.maxContainers;
+        s.holdingGap = src.holdingGap;
+        s.maidToChest = src.maidToChest;
+        s.blacklist = src.blacklist;
+        s.tagMatch = src.tagMatch;
+        s.viaTerminal = src.viaTerminal;
+        s.maidName = src.maidName;
+        s.gapName = src.gapName;
+        s.linkMissing = src.linkMissing;
+        s.maidHasNoGap = src.maidHasNoGap;
+        s.notOwner = src.notOwner;
+        s.maids = src.maids;
+        s.activeMaid = src.activeMaid;
+        s.maidLimit = src.maidLimit;
+        for (TerminalSnapshot.Entry e : src.entries) {
+            TerminalSnapshot.Entry c = new TerminalSnapshot.Entry(e.binding, e.status);
+            c.ownFilter = e.ownFilter;
+            c.blacklist = e.blacklist;
+            c.tagMatch = e.tagMatch;
+            s.entries.add(c);
+        }
+        return s;
     }
 
     /** 快照里一共列了多少堆物品（用来估算要裁掉多少）。 */
@@ -519,16 +636,25 @@ public final class ContainerService {
         s.tagMatch = src.tagMatch;
         s.viaTerminal = src.viaTerminal;
         s.maidName = src.maidName;
+        s.gapName = src.gapName;
         s.linkMissing = src.linkMissing;
         s.maidHasNoGap = src.maidHasNoGap;
         s.notOwner = src.notOwner;
-        // 过滤名单固定 9 格，体积可以忽略，不参与裁剪
+        // 名单条目在 GapItemData 读取时就已净化（只剩物品 ID，没有 NBT、数量恒 1），
+        // 最多 9 套 x 9 格的纯 ID 体积可以忽略，确实不需要参与裁剪；女仆列表同理。
         s.filters = src.filters;
+        s.maids = src.maids;
+        s.activeMaid = src.activeMaid;
+        s.maidLimit = src.maidLimit;
         s.maidSlots = trimSlots(src.maidSlots, keepMaid);
         int left = Math.max(0, keepStacks);
         for (TerminalSnapshot.Entry e : src.entries) {
             TerminalSnapshot.Entry c = new TerminalSnapshot.Entry(e.binding, e.status);
             c.blockId = e.blockId;
+            c.ownFilter = e.ownFilter;
+            c.blacklist = e.blacklist;
+            c.tagMatch = e.tagMatch;
+            c.filters = e.filters;
             // 储罐数量受绑定容器个数限制，体积可控，原样保留
             c.tankSlots.addAll(e.tankSlots);
             c.fluids.addAll(e.fluids);
@@ -591,7 +717,7 @@ public final class ContainerService {
         // 只接受界面真的会发的动作：坏包/旧客户端发来的乱码类型直接丢弃。
         // 注意这里不能回包——一包回一次「build + 编码 + 发送」就等于给了作弊客户端
         // 一个免限速的放大入口（连发 type=99 就能把服务端拖垮）。
-        if (type < 0 || type > ACT_REFRESH) {
+        if (type < 0 || type > MAX_ACTION) {
             return;
         }
         // 限速：普通动作与刷新各记各的（共用一张表会让「拿取后马上刷新」被误挡）
@@ -627,6 +753,10 @@ public final class ContainerService {
             send(sp, false);
             return;
         }
+        if (type == ACT_SELECT_MAID || type == ACT_REMOVE_MAID) {
+            handleMaidAction(sp, type, entryIndex);
+            return;
+        }
 
         GapTarget target = gapTarget(sp);
         ItemStack gap = target.stack;
@@ -644,46 +774,72 @@ public final class ContainerService {
                 send(sp, false);
             }
             case ACT_TOGGLE_FILTER_MODE -> {
-                GapItemData.toggleBlacklist(gap);
+                // 容器有独立名单就只改它自己的，否则改这个容器沿用的共用设置；
+                // 下标越界（快照过期/刚解绑/坏包）直接拒绝，绝不回落去动共用名单
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null) {
+                    GapItemData.toggleBlacklist(gap, fb);
+                }
                 syncGap(sp, target);
                 send(sp, false);
             }
             case ACT_TOGGLE_TAG_MATCH -> {
-                GapItemData.toggleTagMatch(gap);
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null) {
+                    GapItemData.toggleTagMatch(gap, fb);
+                }
+                syncGap(sp, target);
+                send(sp, false);
+            }
+            case ACT_TOGGLE_FILTER_SCOPE -> {
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null) {
+                    GapItemData.setOwnFilter(gap, fb, !GapItemData.hasOwnFilter(gap, fb));
+                    message(sp, GapItemData.hasOwnFilter(gap, fb)
+                            ? "msg.maidgap.filter_own" : "msg.maidgap.filter_shared", ChatFormatting.LIGHT_PURPLE, null);
+                }
                 syncGap(sp, target);
                 send(sp, false);
             }
             case ACT_ADD_FILTER_INV -> {
                 ItemStack sample = slot >= 0 && slot < 36 ? sp.getInventory().getItem(slot) : ItemStack.EMPTY;
-                if (!sample.isEmpty() && !GapItemData.containsFilter(gap, sample)
-                        && !GapItemData.addFilter(gap, sample)) {
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null && !sample.isEmpty() && !GapItemData.containsFilter(gap, fb, sample)
+                        && !GapItemData.addFilter(gap, fb, sample)) {
                     message(sp, "msg.maidgap.filter_full", ChatFormatting.RED, null);
                 }
                 syncGap(sp, target);
                 send(sp, false);
             }
             case ACT_CLEAR_FILTERS -> {
-                GapItemData.clearFilters(gap);
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null) {
+                    GapItemData.clearFilters(gap, fb);
+                }
                 syncGap(sp, target);
                 send(sp, false);
             }
             case ACT_REMOVE_FILTER -> {
-                GapItemData.removeFilter(gap, slot);
+                Binding fb = filterBinding(gap, entryIndex, dim);
+                if (fb != null) {
+                    GapItemData.removeFilter(gap, fb, slot);
+                }
                 syncGap(sp, target);
                 send(sp, false);
             }
             case ACT_ADD_FILTER -> {
                 List<Binding> list = GapItemData.bindings(gap, dim);
                 if (entryIndex >= 0 && entryIndex < list.size()) {
-                    Resolved r = resolve(sp, list.get(entryIndex));
+                    Binding b = list.get(entryIndex);
+                    Resolved r = resolve(sp, b);
                     ItemStack sample = ItemStack.EMPTY;
                     // 客户端快照可能已经过期（容器里的槽位变了），越界就当成没点到
                     if (r.status == TerminalSnapshot.STATUS_OK && r.items != null
                             && slot >= 0 && slot < r.items.getSlots()) {
                         sample = r.items.getStackInSlot(slot);
                     }
-                    if (!sample.isEmpty() && !GapItemData.containsFilter(gap, sample)
-                            && !GapItemData.addFilter(gap, sample)) {
+                    if (!sample.isEmpty() && !GapItemData.containsFilter(gap, b, sample)
+                            && !GapItemData.addFilter(gap, b, sample)) {
                         message(sp, "msg.maidgap.filter_full", ChatFormatting.RED, null);
                     }
                 }
@@ -692,6 +848,31 @@ public final class ContainerService {
             }
             default -> handleBindingAction(sp, target, gap, dim, type, entryIndex, slot);
         }
+    }
+
+    /** 终端左侧女仆列表上的操作：切换当前女仆 / 把女仆移出列表。 */
+    private static void handleMaidAction(ServerPlayer sp, int type, int maidIndex) {
+        ItemStack terminal = heldTerminal(sp);
+        if (terminal.isEmpty()) {
+            send(sp, false);
+            return;
+        }
+        List<GapLinkData.MaidRef> list = GapLinkData.maids(terminal);
+        if (maidIndex < 0 || maidIndex >= list.size()) {
+            // 列表已经变了（比如两次点击之间女仆被删掉）：刷新一次界面就好，不报错
+            send(sp, false);
+            return;
+        }
+        GapLinkData.MaidRef ref = list.get(maidIndex);
+        if (type == ACT_SELECT_MAID) {
+            GapLinkData.setActive(terminal, ref.uuid());
+        } else if (GapLinkData.removeMaid(terminal, ref.uuid())) {
+            message(sp, "msg.maidgap.maid_removed", ChatFormatting.GRAY,
+                    ref.name() == null || ref.name().isEmpty() ? "?" : ref.name());
+        }
+        // 改的是终端 NBT：推一次同步，客户端手里的提示立即更新
+        syncHeld(sp);
+        send(sp, false);
     }
 
     private static void handleBindingAction(ServerPlayer sp, GapTarget target, ItemStack gap, String dim,

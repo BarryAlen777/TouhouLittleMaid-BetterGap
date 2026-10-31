@@ -39,6 +39,24 @@ public class MaidGapTerminalItem extends Item {
         return InteractionResultHolder.sidedSuccess(player.getItemInHand(hand), level.isClientSide());
     }
 
+    /**
+     * 升级迁移兜底（复审报告 R0）：只要这件隙间躺在玩家背包/快捷栏里，服务端就会周期性走到这里，
+     * 把新旧名单洗净写回。不这样兜的话，一件 r23 时期存了脏名单的隙间
+     * 可能在玩家还没打开终端前就随背包同步撑爆包上限踢人。
+     *
+     * 每 20 tick（1 秒）扫一次：扫描成本很低（干净时只做几次 contains），但没必要每刻都来；
+     * 而且不再依赖“洗过就跳过”的标记——原版隙间 GUI 之后写进来的脏数据同样能被洗掉（见 sanitizeFilters）。
+     */
+    @Override
+    public void inventoryTick(ItemStack stack, Level level, net.minecraft.world.entity.Entity carrier, int slotId, boolean isSelected) {
+        if (level.isClientSide()) {
+            return;
+        }
+        if (carrier == null || carrier.tickCount % 20 == 0) {
+            GapItemData.sanitizeFilters(stack);
+        }
+    }
+
     @Override
     public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
         int max = MaidGapConfig.MAX_BOUND_CONTAINERS.get();
@@ -69,6 +87,13 @@ public class MaidGapTerminalItem extends Item {
         tooltip.add(Component.translatable("maidgap.tooltip.bound",
                         String.valueOf(bound), String.valueOf(max))
                 .withStyle(bound == 0 ? ChatFormatting.YELLOW : ChatFormatting.LIGHT_PURPLE));
+        tooltip.add(Component.translatable("maidgap.tooltip.per_container").withStyle(ChatFormatting.DARK_GRAY));
+        // 上面几行显示的都是共用名单；有几个容器开了独立名单就补一句，免得“对不上号”（L3）
+        int own = GapItemData.ownFilterCount(stack);
+        if (own > 0) {
+            tooltip.add(Component.translatable("maidgap.tooltip.own_count", String.valueOf(own))
+                    .withStyle(ChatFormatting.LIGHT_PURPLE));
+        }
         tooltip.add(Component.translatable("maidgap.tooltip.usage.1").withStyle(ChatFormatting.DARK_GRAY));
         tooltip.add(Component.translatable("maidgap.tooltip.usage.2").withStyle(ChatFormatting.DARK_GRAY));
         tooltip.add(Component.translatable("maidgap.tooltip.bauble").withStyle(ChatFormatting.GOLD));

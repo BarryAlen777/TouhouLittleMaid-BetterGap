@@ -29,3 +29,17 @@ mandatory=true
 versionRange="[1.0,)"
 ordering="AFTER"
 side="BOTH"
+# 可选联动：装了「女仆精妙」+「精妙背包」时，女仆背着的精妙背包里的东西也会参与自动搬运。
+# 两个都不强制，缺了本模组照常工作。
+[[dependencies.${mod_id}]]
+modId="sophisticatedbackpacks"
+mandatory=false
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"
+[[dependencies.${mod_id}]]
+modId="maid_sophisticated"
+mandatory=false
+versionRange="[0,)"
+ordering="AFTER"
+side="BOTH"

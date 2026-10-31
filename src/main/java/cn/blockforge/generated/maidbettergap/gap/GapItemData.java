@@ -8,11 +8,13 @@ import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.items.ItemStackHandler;
 
+import javax.annotation.Nullable;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Predicate;
 
 /**
  * 隙间绑定数据：存在「隙间物品自己的 NBT」里（和车万女仆原版设计一致）。
@@ -25,6 +27,7 @@ import java.util.Set;
  *   ItemFilterList  —— 9 格过滤名单（原版 ItemStackHandler 格式）
  *   SlotConfigData  —— 女仆槽位锁定（原版格式，38 字节；本模组终端里可视化编辑）
  * 多容器绑定用我们自己的键 MGBindings 扩展，不影响原版功能。
+ * 单容器的独立过滤名单用 MGBindingFilters（按绑定坐标索引），没设过的容器沿用上面的共用名单。
  */
 public final class GapItemData {
 
@@ -40,6 +43,20 @@ public final class GapItemData {
     private static final String K_BINDINGS = "MGBindings";
     private static final String K_TAG_MATCH = "MGFilterTagMatch";
     private static final String K_PICKUP = "MGPickupAmount";
+
+    /** 单容器独立名单：ListTag，每个元素 = {key, on, black, tag, list}，key 就是绑定坐标。
+     *  on=false 表示这套独立名单只是“存档”（切回共用了，数据留着，再切回来能恢复）。 */
+    private static final String K_BIND_FILTERS = "MGBindingFilters";
+    /** 迁移完成标记（服务端写）：这份物品的名单 NBT 至少被清洗过一次。
+     *  注意它**不再**用来跳过扫描——名单可能被原版隙间 GUI 之类的外部代码再次写脏，见 sanitizeFilters。 */
+    private static final String K_SANITIZED = "MGSanitized";
+    /** ItemStackHandler 序列化格式里物品列表的键名。 */
+    private static final String NBT_ITEMS = "Items";
+    private static final String K_BF_KEY = "key";
+    private static final String K_BF_ON = "on";
+    private static final String K_BF_BLACK = "black";
+    private static final String K_BF_TAG = "tag";
+    private static final String K_BF_LIST = "list";
 
     private GapItemData() {}
 
@@ -106,6 +123,14 @@ public final class GapItemData {
             list.add(e);
         }
         tag.put(K_BINDINGS, list);
+        // 解绑清理：删掉所有已经不在绑定列表里的容器名单（含“存档”的独立名单）。
+        // 否则旧名单会一直躺在物品 NBT 里越积越多，而且以后在原坐标重绑一个新容器时，
+        // 这份玩家早忘了的旧名单会“复活”并悄悄生效。
+        Set<String> keepKeys = new HashSet<>();
+        for (Binding b : bindings) {
+            keepKeys.add(b.key());
+        }
+        pruneOwnFilters(tag, keepKeys);
         // 同步原版 BindingPos = 第一条物品容器绑定，保证原版 GUI 显示一致
         Binding firstItem = null;
         for (Binding b : bindings) {
@@ -144,7 +169,7 @@ public final class GapItemData {
     }
 
     // ------------------------------------------------------------------
-    // 传输方向 / 过滤模式（原版键，原版 GUI 通用）
+    // 传输方向（原版键，原版 GUI 通用）
     // ------------------------------------------------------------------
 
     public static boolean isMaidToChest(ItemStack stack) {
@@ -156,30 +181,199 @@ public final class GapItemData {
         stack.getOrCreateTag().putBoolean(K_IO_MODE, !isMaidToChest(stack));
     }
 
+    // ------------------------------------------------------------------
+    // 过滤名单：默认一套「共用名单」；也可给某个容器单独开一套「独立名单」
+    //
+    // 为什么这么设计：老存档的名单是共用的，直接改成“每个容器一套”会让所有人的
+    // 现有设置一夜之间失效。所以规则是「没单独设过的容器沿用共用名单」，
+    // 玩家在终端里给某个箱子点了「名单:独立」之后，那个容器才只认自己的名单。
+    // ------------------------------------------------------------------
+
+    /** 这个容器是不是已经有了自己的独立名单（false = 沿用隙间的共用名单）。 */
+    public static boolean hasOwnFilter(ItemStack stack, @Nullable Binding binding) {
+        return binding != null && ownFilterEntry(stack, binding) != null;
+    }
+
+    /** 当前正在生效的独立名单条目（只“存档”、已切回共用的返回 null）。 */
+    @Nullable
+    private static CompoundTag ownFilterEntry(ItemStack stack, Binding binding) {
+        CompoundTag e = rawOwnFilterEntry(stack, binding);
+        return e != null && entryActive(e) ? e : null;
+    }
+
+    /** 条目是否处于“独立生效”状态。老存档（1.3.0 之前）的条目没有 on 键，一律视为生效。 */
+    private static boolean entryActive(CompoundTag e) {
+        return !e.contains(K_BF_ON) || e.getBoolean(K_BF_ON);
+    }
+
+    /** 原始条目（可能已切回共用、只是存档），供开关切换用。 */
+    @Nullable
+    private static CompoundTag rawOwnFilterEntry(ItemStack stack, Binding binding) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains(K_BIND_FILTERS, Tag.TAG_LIST)) {
+            return null;
+        }
+        String key = binding.key();
+        ListTag list = tag.getList(K_BIND_FILTERS, Tag.TAG_COMPOUND);
+        for (int i = 0; i < list.size(); i++) {
+            CompoundTag e = list.getCompound(i);
+            if (key.equals(e.getString(K_BF_KEY))) {
+                return e;
+            }
+        }
+        return null;
+    }
+
+    /** 删掉 key 不在 keepKeys 里的所有独立名单条目（解绑后调用，见 setBindings）。 */
+    private static void pruneOwnFilters(CompoundTag tag, Set<String> keepKeys) {
+        if (!tag.contains(K_BIND_FILTERS, Tag.TAG_LIST)) {
+            return;
+        }
+        ListTag old = tag.getList(K_BIND_FILTERS, Tag.TAG_COMPOUND);
+        ListTag out = new ListTag();
+        for (int i = 0; i < old.size(); i++) {
+            CompoundTag e = old.getCompound(i);
+            if (keepKeys.contains(e.getString(K_BF_KEY))) {
+                out.add(e);
+            }
+        }
+        if (out.isEmpty()) {
+            tag.remove(K_BIND_FILTERS);
+        } else {
+            tag.put(K_BIND_FILTERS, out);
+        }
+    }
+
+    /** 这个隙间上有几个容器开着独立名单（tooltip 用）。 */
+    public static int ownFilterCount(ItemStack stack) {
+        CompoundTag tag = stack.getTag();
+        if (tag == null || !tag.contains(K_BIND_FILTERS, Tag.TAG_LIST)) {
+            return 0;
+        }
+        ListTag list = tag.getList(K_BIND_FILTERS, Tag.TAG_COMPOUND);
+        int n = 0;
+        for (int i = 0; i < list.size(); i++) {
+            if (entryActive(list.getCompound(i))) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    /** 写入（或替换）某个容器的独立名单条目。 */
+    private static void putOwnFilterEntry(ItemStack stack, Binding binding, CompoundTag entry) {
+        CompoundTag tag = stack.getOrCreateTag();
+        ListTag old = tag.contains(K_BIND_FILTERS, Tag.TAG_LIST)
+                ? tag.getList(K_BIND_FILTERS, Tag.TAG_COMPOUND) : new ListTag();
+        ListTag out = new ListTag();
+        String key = binding.key();
+        for (int i = 0; i < old.size(); i++) {
+            CompoundTag e = old.getCompound(i);
+            if (!key.equals(e.getString(K_BF_KEY))) {
+                out.add(e);
+            }
+        }
+        entry.putString(K_BF_KEY, key);
+        out.add(entry);
+        tag.put(K_BIND_FILTERS, out);
+    }
+
+    /**
+     * 打开/关闭某个容器的独立名单。
+     * 打开时把当前生效的名单复制过去（玩家不用重摆一遍），之后这个容器的增删只影响它自己；
+     * 关闭不再删除数据，而是“存档”（on=false）——玩家随时切回独立能拿回原来那份名单。
+     * 真正删除只有解绑（setBindings 清理）那一条路。
+     */
+    public static void setOwnFilter(ItemStack stack, @Nullable Binding binding, boolean own) {
+        if (binding == null || hasOwnFilter(stack, binding) == own) {
+            return;
+        }
+        CompoundTag archived = rawOwnFilterEntry(stack, binding);
+        if (!own) {
+            if (archived != null) {
+                archived.putBoolean(K_BF_ON, false);
+                putOwnFilterEntry(stack, binding, archived.copy());
+            }
+            return;
+        }
+        if (archived != null) {
+            // 之前存档过：直接恢复那份名单，不用从共用复制
+            archived.putBoolean(K_BF_ON, true);
+            putOwnFilterEntry(stack, binding, archived.copy());
+            return;
+        }
+        CompoundTag e = new CompoundTag();
+        e.putBoolean(K_BF_ON, true);
+        e.putBoolean(K_BF_BLACK, isBlacklist(stack));
+        e.putBoolean(K_BF_TAG, isTagMatch(stack));
+        e.put(K_BF_LIST, filterHandler(stack, null).serializeNBT());
+        putOwnFilterEntry(stack, binding, e);
+    }
+
+    /** 这个容器实际生效的黑白名单模式（独立名单优先，否则用共用设置）。 */
     public static boolean isBlacklist(ItemStack stack) {
+        return isBlacklist(stack, null);
+    }
+
+    public static boolean isBlacklist(ItemStack stack, @Nullable Binding binding) {
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        if (own != null) {
+            return own.getBoolean(K_BF_BLACK);
+        }
         CompoundTag tag = stack.getTag();
         return tag != null && tag.getBoolean(K_FILTER_MODE);
     }
 
     public static void toggleBlacklist(ItemStack stack) {
-        stack.getOrCreateTag().putBoolean(K_FILTER_MODE, !isBlacklist(stack));
+        toggleBlacklist(stack, null);
+    }
+
+    /** 有独立名单就改那套，否则改共用设置（终端里点“白名单/黑名单”就是它）。 */
+    public static void toggleBlacklist(ItemStack stack, @Nullable Binding binding) {
+        boolean next = !isBlacklist(stack, binding);
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        if (own != null) {
+            own.putBoolean(K_BF_BLACK, next);
+            putOwnFilterEntry(stack, binding, own.copy());
+            return;
+        }
+        stack.getOrCreateTag().putBoolean(K_FILTER_MODE, next);
     }
 
     /** 类别匹配：名单里的物品按“同类标签”匹配（一条鳕鱼覆盖所有鱼）。 */
     public static boolean isTagMatch(ItemStack stack) {
+        return isTagMatch(stack, null);
+    }
+
+    public static boolean isTagMatch(ItemStack stack, @Nullable Binding binding) {
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        if (own != null) {
+            return own.getBoolean(K_BF_TAG);
+        }
         CompoundTag tag = stack.getTag();
         return tag != null && tag.getBoolean(K_TAG_MATCH);
     }
 
     public static void toggleTagMatch(ItemStack stack) {
-        stack.getOrCreateTag().putBoolean(K_TAG_MATCH, !isTagMatch(stack));
+        toggleTagMatch(stack, null);
+    }
+
+    public static void toggleTagMatch(ItemStack stack, @Nullable Binding binding) {
+        boolean next = !isTagMatch(stack, binding);
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        if (own != null) {
+            own.putBoolean(K_BF_TAG, next);
+            putOwnFilterEntry(stack, binding, own.copy());
+            return;
+        }
+        stack.getOrCreateTag().putBoolean(K_TAG_MATCH, next);
     }
 
     // ------------------------------------------------------------------
     // 物品白名单：9 格过滤名单（原版 ItemFilterList 同格式）
     // ------------------------------------------------------------------
 
-    private static ItemStackHandler filterHandler(ItemStack stack) {
+    private static ItemStackHandler filterHandler(ItemStack stack, @Nullable Binding binding) {
         ItemStackHandler h = new ItemStackHandler(FILTER_SLOTS) {
             @Override
             public int getSlotLimit(int slot) {
@@ -187,14 +381,126 @@ public final class GapItemData {
             }
         };
         CompoundTag tag = stack.getTag();
-        if (tag != null && tag.contains(K_FILTER_LIST, Tag.TAG_COMPOUND)) {
-            h.deserializeNBT(tag.getCompound(K_FILTER_LIST));
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        CompoundTag src = null;
+        if (own != null) {
+            src = own.getCompound(K_BF_LIST);
+        } else if (tag != null && tag.contains(K_FILTER_LIST, Tag.TAG_COMPOUND)) {
+            src = tag.getCompound(K_FILTER_LIST);
+        }
+        if (src != null && !src.isEmpty()) {
+            h.deserializeNBT(src);
+        }
+        // 读取时净化（只修内存副本，不写回）：名单条目只保留“是哪个物品”，丢掉全部 NBT。
+        // 匹配本来就只看物品和物品标签（NBT 不参与判断），旧版本却把完整物品存了进来，
+        // 一个“塞满成书的潜影盒”能让隙间物品的 NBT 涨几 MB——随物品同步时会撑爆
+        // 2 MB 上限把客户端直接踢下线。1.3.0 起新写入的名单已经是干净的，
+        // 这里负责让升级前留下的脏数据在“本次使用”里表现正常。
+        // 注意：真正写回存档由服务端调用 sanitizeFilters 完成（见该方法注释）——
+        // 本方法在客户端 tooltip 里也会被调到，客户端改写物品副本毫无意义还会产生副作用。
+        for (int i = 0; i < h.getSlots(); i++) {
+            ItemStack st = h.getStackInSlot(i);
+            if (!st.isEmpty() && (st.hasTag() || st.getCount() != 1)) {
+                h.setStackInSlot(i, new ItemStack(st.getItem()));
+            }
         }
         return h;
     }
 
+    /**
+     * 服务端专用：把这份隙间上所有名单（共用 + 每个容器的独立名单，含“存档”的）一次性净化并写回 NBT。
+     *
+     * 为什么需要它：r23 及以前往名单里存过带 NBT 的完整物品（附魔书、药水、塞了东西的潜影盒），
+     * 这些脏数据如果一直躺在物品里，会随原版容器同步原样发给客户端，可能撑爆 2 MB 上限踢人。
+     * 只在“打开某个容器的名单”时清洗是不够的——一件隙间可能绑了好几个容器，
+     * 没被打开过的那几份脏名单照样会留在物品上。所以这里一次遍历全部。
+     *
+     * 调用时机（都是服务端）：玩家背包的物品 tick、登录时、女仆饰品搬运 tick、终端快照构建前、
+     * 掉落物进入世界时。
+     *
+     * 为什么不再用“洗过就跳过”的一次性标记：名单不止本模组会写——车万女仆自己的隙间 GUI
+     * （`enhance_original_gap` 关掉时完全走原版）照样能往 ItemFilterList 里塞带完整 NBT 的物品。
+     * 如果只认标记，被我们洗过一次的隙间，之后再被原版 GUI 写脏就永远洗不掉了。
+     * 所以这里每次都真扫：最多 9 + 9×8 = 81 个条目，每个只做一两次 contains 判断，
+     * 干净时一次写入都不做；脏了才写回并补上 MGSanitized（该键仅为兼容 r27 存档而保留）。
+     */
+    public static void sanitizeFilters(ItemStack stack) {
+        if (stack.isEmpty()) {
+            return;
+        }
+        CompoundTag tag = stack.getTag();
+        if (tag == null) {
+            return;
+        }
+        boolean dirty = false;
+        // 共用名单（原版 ItemFilterList，ItemStackHandler 格式）
+        if (tag.contains(K_FILTER_LIST, Tag.TAG_COMPOUND)) {
+            dirty |= sanitizeStoredList(tag.getCompound(K_FILTER_LIST));
+        }
+        // 每个容器的独立名单：包括已切回共用、只是“存档”的那几套（它们同样会随物品同步）
+        if (tag.contains(K_BIND_FILTERS, Tag.TAG_LIST)) {
+            ListTag sets = tag.getList(K_BIND_FILTERS, Tag.TAG_COMPOUND);
+            for (int i = 0; i < sets.size(); i++) {
+                CompoundTag entry = sets.getCompound(i);
+                if (entry.contains(K_BF_LIST, Tag.TAG_COMPOUND)) {
+                    dirty |= sanitizeStoredList(entry.getCompound(K_BF_LIST));
+                }
+            }
+        }
+        if (dirty) {
+            tag.putBoolean(K_SANITIZED, true);
+        }
+    }
+
+    /**
+     * 清洗一个序列化后的 9 格名单：条目只留“是哪个物品”，数量归 1。
+     *
+     * 要清两处：`tag`（附魔、药水、潜影盒内容物等）和根上的 `ForgeCaps`
+     * （Forge 把物品的能力数据写在根 compound 而不是 tag 里，只删 tag 会漏）。
+     * 匹配只看物品 ID 和物品标签，删掉这些不改变过滤行为。
+     *
+     * @return 是否真的改动了数据（没脏就不写回，避免每次扫描都触发物品同步）
+     */
+    private static boolean sanitizeStoredList(CompoundTag handlerTag) {
+        if (!handlerTag.contains(NBT_ITEMS, Tag.TAG_LIST)) {
+            return false;
+        }
+        boolean dirty = false;
+        ListTag items = handlerTag.getList(NBT_ITEMS, Tag.TAG_COMPOUND);
+        for (int i = 0; i < items.size(); i++) {
+            CompoundTag e = items.getCompound(i);
+            if (e.contains("tag")) {
+                e.remove("tag");
+                dirty = true;
+            }
+            if (e.contains("ForgeCaps")) {
+                e.remove("ForgeCaps");
+                dirty = true;
+            }
+            if (e.contains("Count") && e.getByte("Count") != 1) {
+                e.putByte("Count", (byte) 1);
+                dirty = true;
+            }
+        }
+        return dirty;
+    }
+
+    private static void saveFilterHandler(ItemStack stack, @Nullable Binding binding, ItemStackHandler h) {
+        CompoundTag own = binding == null ? null : ownFilterEntry(stack, binding);
+        if (own != null) {
+            own.put(K_BF_LIST, h.serializeNBT());
+            putOwnFilterEntry(stack, binding, own.copy());
+            return;
+        }
+        stack.getOrCreateTag().put(K_FILTER_LIST, h.serializeNBT());
+    }
+
     public static List<ItemStack> filters(ItemStack stack) {
-        ItemStackHandler h = filterHandler(stack);
+        return filters(stack, null);
+    }
+
+    public static List<ItemStack> filters(ItemStack stack, @Nullable Binding binding) {
+        ItemStackHandler h = filterHandler(stack, binding);
         List<ItemStack> out = new ArrayList<>();
         for (int i = 0; i < h.getSlots(); i++) {
             out.add(h.getStackInSlot(i).copy());
@@ -207,11 +513,15 @@ public final class GapItemData {
      * 先按物品本身精确匹配（与原版一致）；开了类别匹配时，再按共享标签匹配。
      */
     public static boolean matchesFilter(ItemStack stack, ItemStack target) {
+        return matchesFilter(stack, null, target);
+    }
+
+    public static boolean matchesFilter(ItemStack stack, @Nullable Binding binding, ItemStack target) {
         if (target.isEmpty()) {
             return false;
         }
-        boolean tagMatch = isTagMatch(stack);
-        ItemStackHandler h = filterHandler(stack);
+        boolean tagMatch = isTagMatch(stack, binding);
+        ItemStackHandler h = filterHandler(stack, binding);
         for (int i = 0; i < h.getSlots(); i++) {
             ItemStack entry = h.getStackInSlot(i);
             if (entry.isEmpty()) {
@@ -228,15 +538,19 @@ public final class GapItemData {
     }
 
     /**
-     * 批量过滤用的预计算断言（女仆每个搬运周期构建一次，避免逐件物品重复解析名单）。
+     * 批量过滤用的预计算断言（女仆每个搬运周期、每个容器构建一次，避免逐件物品重复解析名单）。
      * 语义与原版一致：白名单 = 命中才搬；黑名单 = 命中就不搬。
      */
-    public static java.util.function.Predicate<ItemStack> filterPredicate(ItemStack gap) {
-        boolean blacklist = isBlacklist(gap);
-        boolean tagMatch = isTagMatch(gap);
+    public static Predicate<ItemStack> filterPredicate(ItemStack gap) {
+        return filterPredicate(gap, null);
+    }
+
+    public static Predicate<ItemStack> filterPredicate(ItemStack gap, @Nullable Binding binding) {
+        boolean blacklist = isBlacklist(gap, binding);
+        boolean tagMatch = isTagMatch(gap, binding);
         List<Item> exact = new ArrayList<>();
         List<Set<net.minecraft.tags.TagKey<net.minecraft.world.item.Item>>> tagSets = new ArrayList<>();
-        ItemStackHandler h = filterHandler(gap);
+        ItemStackHandler h = filterHandler(gap, binding);
         for (int i = 0; i < h.getSlots(); i++) {
             ItemStack entry = h.getStackInSlot(i);
             if (entry.isEmpty()) {
@@ -278,10 +592,14 @@ public final class GapItemData {
 
     /** 名单里是不是已经有这个物品了（按物品类型判，和 addFilter 的去重口径一致）。 */
     public static boolean containsFilter(ItemStack stack, ItemStack sample) {
+        return containsFilter(stack, null, sample);
+    }
+
+    public static boolean containsFilter(ItemStack stack, @Nullable Binding binding, ItemStack sample) {
         if (sample.isEmpty()) {
             return false;
         }
-        ItemStackHandler h = filterHandler(stack);
+        ItemStackHandler h = filterHandler(stack, binding);
         for (int i = 0; i < h.getSlots(); i++) {
             ItemStack entry = h.getStackInSlot(i);
             if (!entry.isEmpty() && ItemStack.isSameItem(entry, sample)) {
@@ -293,10 +611,14 @@ public final class GapItemData {
 
     /** 加入过滤名单（去重）。名单满了返回 false。 */
     public static boolean addFilter(ItemStack stack, ItemStack sample) {
+        return addFilter(stack, null, sample);
+    }
+
+    public static boolean addFilter(ItemStack stack, @Nullable Binding binding, ItemStack sample) {
         if (sample.isEmpty()) {
             return false;
         }
-        ItemStackHandler h = filterHandler(stack);
+        ItemStackHandler h = filterHandler(stack, binding);
         for (int i = 0; i < h.getSlots(); i++) {
             if (ItemStack.isSameItem(h.getStackInSlot(i), sample)) {
                 return false;
@@ -304,10 +626,13 @@ public final class GapItemData {
         }
         for (int i = 0; i < h.getSlots(); i++) {
             if (h.getStackInSlot(i).isEmpty()) {
-                ItemStack one = sample.copy();
-                one.setCount(1);
+                // 名单只存“是哪个物品”：不带 NBT、数量固定 1。
+                // 匹配只看物品本身和标签，NBT 从来不参与判断；以前 sample.copy() 原样入名单，
+                // 一个“塞满成书的潜影盒”能往隙间物品的 NBT 里灌几 MB，
+                // 随物品同步时撑爆 2 MB 上限把玩家踢下线（见 filterHandler 的读取净化）。
+                ItemStack one = new ItemStack(sample.getItem());
                 h.setStackInSlot(i, one);
-                stack.getOrCreateTag().put(K_FILTER_LIST, h.serializeNBT());
+                saveFilterHandler(stack, binding, h);
                 return true;
             }
         }
@@ -315,19 +640,29 @@ public final class GapItemData {
     }
 
     public static void removeFilter(ItemStack stack, int index) {
+        removeFilter(stack, null, index);
+    }
+
+    public static void removeFilter(ItemStack stack, @Nullable Binding binding, int index) {
         if (index < 0 || index >= FILTER_SLOTS) {
             return;
         }
-        ItemStackHandler h = filterHandler(stack);
+        ItemStackHandler h = filterHandler(stack, binding);
         h.setStackInSlot(index, ItemStack.EMPTY);
-        stack.getOrCreateTag().put(K_FILTER_LIST, h.serializeNBT());
+        saveFilterHandler(stack, binding, h);
     }
 
     public static void clearFilters(ItemStack stack) {
-        CompoundTag tag = stack.getTag();
-        if (tag != null) {
-            tag.remove(K_FILTER_LIST);
+        clearFilters(stack, null);
+    }
+
+    /** 清空名单：有独立名单就只清它，否则清共用名单。 */
+    public static void clearFilters(ItemStack stack, @Nullable Binding binding) {
+        ItemStackHandler h = filterHandler(stack, binding);
+        for (int i = 0; i < h.getSlots(); i++) {
+            h.setStackInSlot(i, ItemStack.EMPTY);
         }
+        saveFilterHandler(stack, binding, h);
     }
 
     // ------------------------------------------------------------------

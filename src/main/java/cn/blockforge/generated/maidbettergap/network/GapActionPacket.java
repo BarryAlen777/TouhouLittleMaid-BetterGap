@@ -33,6 +33,10 @@ public class GapActionPacket {
         buf.writeVarInt(slot);
     }
 
+    /** 同类错误只完整记一次堆栈，后续只留一行：数据问题持续存在时不至于刷屏（复审报告 R4）。 */
+    private static final java.util.concurrent.atomic.AtomicBoolean ERROR_LOGGED =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     public void handle(Supplier<NetworkEvent.Context> ctxSupplier) {
         NetworkEvent.Context ctx = ctxSupplier.get();
         // consumerMainThread：已经处于主线程，直接处理
@@ -40,10 +44,15 @@ public class GapActionPacket {
         if (player != null) {
             try {
                 ContainerService.handleAction(player, type, entryIndex, slot);
-            } catch (LinkageError err) {
-                // 车万女仆改了内部方法签名时（我们用的是编译桩），网络线程里漏出去的 LinkageError
-                // 会直接踢崩服务器。这里只丢这一次动作，别让整局游戏陪葬。
-                GeneratedMod.LOGGER.error("[maid_better_gap] 动作处理时类链接失败（车万女仆版本不匹配？）", err);
+            } catch (LinkageError | RuntimeException err) {
+                // 车万女仆改了内部方法签名时（我们用的是编译桩）或某次数据没就绪时，
+                // 从包处理里漏出去的异常会直接踢崩服务器。这里只丢这一次动作，
+                // 别让整局游戏陪葬（M5/M7 的入口级最后防线）。
+                if (ERROR_LOGGED.compareAndSet(false, true)) {
+                    GeneratedMod.LOGGER.error("[maid_better_gap] 动作处理时出错，本次动作已忽略（同类错误后续不再打完整堆栈）。", err);
+                } else {
+                    GeneratedMod.LOGGER.debug("[maid_better_gap] 动作处理时出错，本次动作已忽略。", err);
+                }
             }
         }
         ctx.setPacketHandled(true);

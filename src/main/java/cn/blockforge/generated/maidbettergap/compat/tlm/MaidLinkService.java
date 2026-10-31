@@ -1,11 +1,13 @@
 package cn.blockforge.generated.maidbettergap.compat.tlm;
 
 import cn.blockforge.generated.maidbettergap.GeneratedMod;
+import cn.blockforge.generated.maidbettergap.MaidGapConfig;
 import cn.blockforge.generated.maidbettergap.ModItems;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
 import cn.blockforge.generated.maidbettergap.gap.GapItemData;
 import cn.blockforge.generated.maidbettergap.gap.GapLinkData;
 import cn.blockforge.generated.maidbettergap.gap.GapTarget;
+import cn.blockforge.generated.maidbettergap.gap.TerminalSnapshot;
 import com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid;
 import com.github.tartaricacid.touhoulittlemaid.inventory.handler.BaubleItemHandler;
 import net.minecraft.ChatFormatting;
@@ -84,11 +86,17 @@ public final class MaidLinkService {
         if (!(event.getEntity() instanceof ServerPlayer sp) || sp.isSpectator()) {
             return;
         }
-        link(held, maid);
+        boolean added = link(held, maid);
         // NBT 改了要推一次同步，否则客户端手里的终端 tooltip 一直停在“未链接”
         ContainerService.syncHeld(sp);
-        sp.displayClientMessage(Component.translatable("msg.maidgap.linked", displayName(maid))
-                .withStyle(ChatFormatting.LIGHT_PURPLE), true);
+        if (added) {
+            sp.displayClientMessage(Component.translatable("msg.maidgap.linked", displayName(maid))
+                    .withStyle(ChatFormatting.LIGHT_PURPLE), true);
+        } else {
+            // 列表满了：这只新女仆没加进去，但界面照开，玩家可以在左侧列表里先删一只
+            sp.displayClientMessage(Component.translatable("msg.maidgap.maid_full",
+                    String.valueOf(MaidGapConfig.TERMINAL_MAID_LIMIT.get())).withStyle(ChatFormatting.RED), true);
+        }
         sp.playSound(SoundEvents.ENDERMAN_TELEPORT, 0.35f, 1.7f);
         GapTarget t = resolve(sp, held);
         if (!t.stack.isEmpty()) {
@@ -99,9 +107,14 @@ public final class MaidLinkService {
         }
     }
 
-    /** 把终端链接到这只女仆，并记下她的展示名。 */
-    public static void link(ItemStack terminal, Entity maid) {
-        GapLinkData.link(terminal, maid.getUUID(), displayName(maid));
+    /**
+     * 把女仆加进终端的女仆列表，并切换成“当前管理她”。
+     *
+     * @return false = 列表已满（上限见配置 terminal_maid_limit）
+     */
+    public static boolean link(ItemStack terminal, Entity maid) {
+        return GapLinkData.addMaid(terminal, maid.getUUID(), displayName(maid),
+                MaidGapConfig.TERMINAL_MAID_LIMIT.get());
     }
 
     /**
@@ -140,7 +153,7 @@ public final class MaidLinkService {
      */
     public static GapTarget resolve(ServerPlayer user, ItemStack terminal) {
         String savedName = GapLinkData.savedName(terminal);
-        UUID uuid = GapLinkData.linkUuid(terminal);
+        UUID uuid = GapLinkData.activeUuid(terminal);
         if (uuid == null) {
             return GapTarget.emptyTerminal(savedName);
         }
@@ -181,6 +194,54 @@ public final class MaidLinkService {
     }
 
     /**
+     * 终端左侧女仆列表的状态：每只在不在线、饰品栏里有没有隙间。
+     * 女仆不在已加载区块 / 已经不是你的女仆 = 离线（界面上照常列出，也能切换和删除）。
+     */
+    public static List<TerminalSnapshot.MaidEntry> maidStates(ServerPlayer user, ItemStack terminal) {
+        List<TerminalSnapshot.MaidEntry> out = new ArrayList<>();
+        for (GapLinkData.MaidRef ref : GapLinkData.maids(terminal)) {
+            TerminalSnapshot.MaidEntry e = new TerminalSnapshot.MaidEntry(ref.uuid().toString());
+            e.name = ref.name() == null ? "" : ref.name();
+            // 每只女仆单独兜底：getMaidBauble()/displayName 之类可能抛 RuntimeException，
+            // 只有一只出问题就让她显示“离线”，绝不能把整份列表（乃至整个快照发送）带崩。
+            try {
+                EntityMaid maid = findMaid(user.server, ref.uuid());
+                if (maid != null) {
+                    Entity asEntity = maid;
+                    if (alive(asEntity)) {
+                        if (ownedBy(asEntity, user.getUUID())) {
+                            e.online = true;
+                            String live = displayName(asEntity);
+                            if (!live.isEmpty()) {
+                                e.name = live;
+                            }
+                            e.hasGap = hasGap(maid);
+                        } else {
+                            // 活着但不是这位玩家的女仆：终端可能转手过，单独标“非本人”
+                            e.notOwner = true;
+                        }
+                    }
+                }
+            } catch (LinkageError | RuntimeException err) {
+                // 查询这只女仆失败：留 e.online=false，按“离线”显示，继续处理下一只
+            }
+            out.add(e);
+        }
+        return out;
+    }
+
+    /** 这只女仆饰品栏里有没有隙间。 */
+    private static boolean hasGap(EntityMaid maid) {
+        BaubleItemHandler baubles = maid.getMaidBauble();
+        for (int i = 0; i < baubles.getSlots(); i++) {
+            if (ContainerService.isGapItem(baubles.getStackInSlot(i))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
      * 槽位配置界面要展示的女仆背包内容，固定 38 格：
      * 0-35 = 背包（超出她实际背包大小的格留空），36 = 主手，37 = 副手。
      * 索引语义与原版 SlotConfigData 数组一致（见 EnhancedGapBauble / GapItemData）。
@@ -205,8 +266,8 @@ public final class MaidLinkService {
             }
             out.set(36, inv.getStackInSlot(size - 2).copy());
             out.set(37, inv.getStackInSlot(size - 1).copy());
-        } catch (LinkageError err) {
-            // 版本不匹配时退回全空显示，锁定本身仍然可编辑
+        } catch (LinkageError | RuntimeException err) {
+            // 版本不匹配 / 女仆数据未就绪时退回全空显示，锁定本身仍然可编辑
         }
         return out;
     }

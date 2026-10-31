@@ -4,15 +4,18 @@ import cn.blockforge.generated.maidbettergap.MaidGapConfig;
 
 import cn.blockforge.generated.maidbettergap.ModItems;
 import cn.blockforge.generated.maidbettergap.gap.ContainerService;
+import cn.blockforge.generated.maidbettergap.gap.GapItemData;
 import cn.blockforge.generated.maidbettergap.gap.GapStore;
 import com.mojang.logging.LogUtils;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import org.slf4j.Logger;
 import net.minecraftforge.event.TickEvent;
+import net.minecraftforge.event.entity.EntityJoinLevelEvent;
 import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
 import net.minecraftforge.event.entity.player.PlayerEvent;
 import net.minecraftforge.event.entity.player.PlayerInteractEvent;
@@ -154,6 +157,44 @@ public final class GapInteractions {
     @SubscribeEvent
     public static void onPlayerClone(PlayerEvent.Clone event) {
         GapStore.copyOnClone(event.getOriginal(), event.getEntity());
+    }
+
+    /**
+     * 玩家登录：扫一遍背包里的隙间做升级净化（复审报告 R0）。
+     * 本模组的隙间有自己的 inventoryTick 兜底，这里补上「配置白名单里的原版隙间」
+     * ——那些物品的 tick 不归我们管，只能在登录时手动洗一次。
+     *
+     * 提醒：登录事件与“服务端发出的第一份背包内容包”谁先谁后没有保证，
+     * 极端情况下背包里直接躺着一件 >2 MB 的旧隙间，进服瞬间仍可能被踢一次。
+     * 稳妥做法是先把旧隙间放进箱子再取出来，或者进服后等一秒；更新说明里写了。
+     */
+    @SubscribeEvent
+    public static void onPlayerLoggedIn(PlayerEvent.PlayerLoggedInEvent event) {
+        Player player = event.getEntity();
+        for (int i = 0; i < player.getInventory().getContainerSize(); i++) {
+            ItemStack stack = player.getInventory().getItem(i);
+            if (!stack.isEmpty() && ContainerService.isGapItem(stack)) {
+                GapItemData.sanitizeFilters(stack);
+            }
+        }
+    }
+
+    /**
+     * 掉在地上的旧隙间：区块加载或玩家走近时，物品实体里的物品会随同步发给客户端。
+     * 如果名单又脏又大，玩家还没伸手去捡就可能被踢下线，所以实体刚进世界时先洗一遍
+     * （干净时零写入，成本可以忽略）。箱子里的旧隙间不在这个覆盖范围内——拿一次就干净。
+     */
+    @SubscribeEvent
+    public static void onItemEntityJoinLevel(EntityJoinLevelEvent event) {
+        if (event.getEntity().level().isClientSide()) {
+            return;
+        }
+        if (event.getEntity() instanceof ItemEntity drop) {
+            ItemStack stack = drop.getItem();
+            if (!stack.isEmpty() && ContainerService.isGapItem(stack)) {
+                GapItemData.sanitizeFilters(stack);
+            }
+        }
     }
 
     /** 玩家退出：清掉内存里的“最近用过”记录。 */
