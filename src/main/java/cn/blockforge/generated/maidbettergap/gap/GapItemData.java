@@ -75,10 +75,17 @@ public final class GapItemData {
         }
         if (tag.contains(K_BINDINGS, Tag.TAG_LIST)) {
             ListTag list = tag.getList(K_BINDINGS, Tag.TAG_COMPOUND);
+            // 自动合并重复绑定：同一容器（同维度同坐标）出现多条时只认第一条。
+            // 正常操作走 bindOrToggle 不会产生重复，这里兜底异常数据/手改 NBT/外部写入，
+            // 顺带让终端界面只显示一条。
+            Set<String> seenKeys = new HashSet<>();
             for (int i = 0; i < list.size(); i++) {
                 CompoundTag e = list.getCompound(i);
-                out.add(new Binding(e.getString("dim"),
-                        new BlockPos(e.getInt("x"), e.getInt("y"), e.getInt("z")), e.getByte("kind")));
+                Binding b = new Binding(e.getString("dim"),
+                        new BlockPos(e.getInt("x"), e.getInt("y"), e.getInt("z")), e.getByte("kind"));
+                if (seenKeys.add(b.key())) {
+                    out.add(b);
+                }
             }
             // 对账：原版 GUI 只会改 BindingPos（它只有单容器、而且不带维度）。
             // 如果 BindingPos 指向的位置不在我们的列表里，说明玩家是在原版界面上改的绑定，
@@ -113,7 +120,13 @@ public final class GapItemData {
     public static void setBindings(ItemStack stack, List<Binding> bindings) {
         CompoundTag tag = stack.getOrCreateTag();
         ListTag list = new ListTag();
+        // 写入端同样去重：和 bindings() 的读取合并保持一致，旧档里的重复条目
+        // 会在下一次终端改动时被顺手洗掉。
+        Set<String> writtenKeys = new HashSet<>();
         for (Binding b : bindings) {
+            if (!writtenKeys.add(b.key())) {
+                continue;
+            }
             CompoundTag e = new CompoundTag();
             e.putString("dim", b.dimension());
             e.putInt("x", b.pos().getX());

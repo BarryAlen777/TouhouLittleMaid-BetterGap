@@ -19,7 +19,10 @@ import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.DoubleBlockCombiner;
 import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraftforge.items.IItemHandler;
 import net.minecraftforge.items.ItemHandlerHelper;
 import net.minecraftforge.items.wrapper.CombinedInvWrapper;
@@ -114,23 +117,30 @@ public final class EnhancedGapBauble implements IMaidBauble {
         List<IItemHandler> backpacks = MaidGapConfig.SOPH_BACKPACKS.get()
                 ? SophBackpackBridge.wornBackpacks(asEntity)
                 : java.util.Collections.emptyList();
+        // 保护：同一个物理容器每轮只搬一次。两条绑定指向同一个方块（重复绑定）、
+        // 或指向同一大箱子的左右两半（两半共享一个 54 格背包），都算同一个容器，只搬第一遍。
+        java.util.Set<String> handledContainers = new java.util.HashSet<>();
         for (Binding b : bindings) {
             if (b.isFluid()) {
                 continue; // 液体只走玩家终端取桶，女仆不搬流体
             }
-            IItemHandler chest = resolveChest(asEntity, b);
+            ResolvedChest chest = resolveChest(asEntity, b);
             if (chest == null) {
                 continue;
             }
+            if (!handledContainers.add(chest.key())) {
+                continue; // 这一轮已经搬过这个容器了
+            }
+            IItemHandler items = chest.items();
             // 每个容器用自己的过滤名单：这个容器单独设过名单就只认它自己的，
             // 没设过就沿用隙间上的共用名单（老存档行为不变）。
             java.util.function.Predicate<ItemStack> allowed = GapItemData.filterPredicate(baubleItem, b);
             if (maidToChest) {
-                moved |= maidToChest(asEntity, maidInv, chest, allowed, slotLock, cap);
-                moved |= backpacksToChest(asEntity, backpacks, chest, allowed, cap);
+                moved |= maidToChest(asEntity, maidInv, items, allowed, slotLock, cap);
+                moved |= backpacksToChest(asEntity, backpacks, items, allowed, cap);
             } else {
-                moved |= chestToMaid(asEntity, chest, maidInv, allowed, slotLock, cap);
-                moved |= chestToBackpacks(asEntity, chest, backpacks, allowed, cap);
+                moved |= chestToMaid(asEntity, items, maidInv, allowed, slotLock, cap);
+                moved |= chestToBackpacks(asEntity, items, backpacks, allowed, cap);
             }
         }
         if (moved) {
@@ -142,7 +152,10 @@ public final class EnhancedGapBauble implements IMaidBauble {
     // 容器解析：维度 + 距离 + 模组白名单 + 能力
     // ------------------------------------------------------------------
 
-    private static IItemHandler resolveChest(Entity maidEntity, Binding b) {
+    /** 解析结果：容器物品栏 + 用于「每轮只搬一次」去重的容器身份键。 */
+    private record ResolvedChest(IItemHandler items, String key) {}
+
+    private static ResolvedChest resolveChest(Entity maidEntity, Binding b) {
         Level level = maidEntity.level();
         boolean sameDim = level.dimension().location().toString().equals(b.dimension());
         boolean infinite = MaidGapConfig.INFINITE_RANGE.get();
@@ -180,7 +193,28 @@ public final class EnhancedGapBauble implements IMaidBauble {
         if (blockKey == null || !MaidGapConfig.modAllowed(blockKey.getNamespace())) {
             return null;
         }
-        return ContainerService.findItems(be);
+        IItemHandler items = ContainerService.findItems(be);
+        if (items == null) {
+            return null;
+        }
+        return new ResolvedChest(items, containerKey(target, b.dimension(), pos, be.getBlockState()));
+    }
+
+    /**
+     * 容器身份键：维度 + 归一化后的坐标。
+     * 普通方块就是自己；原版大箱子（含陷阱箱）左右两半共享同一个背包，
+     * 归到坐标较小的一半，绑了两半也只算一个容器。模组箱子按坐标合并。
+     */
+    private static String containerKey(ServerLevel level, String dim, BlockPos pos, BlockState state) {
+        if (state.getBlock() instanceof ChestBlock
+                && ChestBlock.getBlockType(state) != DoubleBlockCombiner.BlockType.SINGLE) {
+            BlockPos partner = pos.relative(ChestBlock.getConnectedDirection(state));
+            if (level.getBlockState(partner).is(state.getBlock())
+                    && partner.asLong() < pos.asLong()) {
+                pos = partner;
+            }
+        }
+        return dim + ";" + pos.getX() + "," + pos.getY() + "," + pos.getZ();
     }
 
     // ------------------------------------------------------------------
