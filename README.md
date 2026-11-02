@@ -44,3 +44,7 @@
 ## 📄 开源说明
 本项目为车万女仆粉丝向附属扩展项目，遵循对应开源协议。
 > 提示：本模组新增的是**增强隙间**，不会修改、覆盖原版隙间饰品，原版隙间依旧可以正常使用。
+
+## 🔗 相关链接
+- [MC百科](https://www.mcmod.cn/class/31952.html)
+- [CurseForge](https://www.curseforge.com/minecraft/mc-mods/touhoulittlemaid-bettergap)
