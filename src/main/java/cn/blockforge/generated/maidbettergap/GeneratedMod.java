@@ -2,6 +2,8 @@ package cn.blockforge.generated.maidbettergap;
 
 import cn.blockforge.generated.maidbettergap.network.ModNetwork;
 import com.mojang.logging.LogUtils;
+import net.minecraft.world.item.Item;
+import net.minecraft.world.item.ItemStack;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.ModList;
 import net.minecraftforge.fml.ModLoadingContext;
@@ -9,6 +11,7 @@ import net.minecraftforge.fml.common.Mod;
 import net.minecraftforge.fml.config.ModConfig;
 import net.minecraftforge.fml.event.lifecycle.FMLCommonSetupEvent;
 import net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext;
+import net.minecraftforge.fml.loading.FMLPaths;
 import org.slf4j.Logger;
 
 /**
@@ -39,9 +42,12 @@ public final class GeneratedMod {
 
     public GeneratedMod() {
         IEventBus bus = FMLJavaModLoadingContext.get().getModEventBus();
+        // 升级迁移：抢在 Forge 读配置之前，把旧版本配置里的 extra_gap_items 改名为 enhanced_gap_items。
+        // 放晚了没用——Forge 会把不认识的键直接丢掉，老玩家登记过的隙间物品就失效了（见方法注释）。
+        MaidGapConfig.migrateLegacyConfig(FMLPaths.CONFIGDIR.get());
         // 用 COMMON 而不是 SERVER：车万女仆在 common setup 阶段就会调用我们的
         // bindMaidBauble 注册饰品，SERVER 配置那时还没加载，拿不到用户的真实值。
-        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, MaidGapConfig.SPEC, "maid_gap_enhanced-common.toml");
+        ModLoadingContext.get().registerConfig(ModConfig.Type.COMMON, MaidGapConfig.SPEC, MaidGapConfig.CONFIG_FILE_NAME);
         ModItems.register(bus);
         bus.addListener(ModItems::onBuildContents);
         bus.addListener(this::commonSetup);
@@ -68,6 +74,29 @@ public final class GeneratedMod {
         } else {
             LOGGER.info("[maid_better_gap] 已对接车万女仆 {}（mods.toml 里声明 [1.0,)）",
                     tlm.get().getModInfo().getVersion());
+            probeTlmBaubleApi();
+        }
+    }
+
+    /**
+     * 启动自检第二步：反射确认车万女仆的饰品接口还在。
+     *
+     * 我们是「编译桩 + 运行时对接」：如果对方改了这个签名，功能会静默停用（有兜底、不会崩服），
+     * 但日志里只会在第一次搬运时出现一行看不懂的 NoSuchMethodError。这里提前探一次，
+     * 启动日志里直接写清楚「能用」还是「版本对不上」，排查时一眼就能看出来。
+     */
+    private static void probeTlmBaubleApi() {
+        try {
+            Class<?> bauble = Class.forName("com.github.tartaricacid.touhoulittlemaid.api.bauble.IMaidBauble");
+            Class<?> maid = Class.forName("com.github.tartaricacid.touhoulittlemaid.entity.passive.EntityMaid");
+            bauble.getMethod("onTick", maid, ItemStack.class);
+            Class<?> manager = Class.forName("com.github.tartaricacid.touhoulittlemaid.item.bauble.BaubleManager");
+            manager.getMethod("bind", Item.class, bauble);
+            LOGGER.info("[maid_better_gap] 车万女仆饰品接口自检通过：女仆自动搬运可用");
+        } catch (LinkageError | ReflectiveOperationException ex) {
+            // 只是功能停用，不影响开服；测过 1.5.3 是匹配的，跑到这里说明版本变了
+            LOGGER.warn("[maid_better_gap] 车万女仆饰品接口自检失败：女仆自动搬运会停用，"
+                    + "其余功能（终端、绑定、补货）不受影响。请把本模组与车万女仆更新到互相匹配的版本。", ex);
         }
     }
 }

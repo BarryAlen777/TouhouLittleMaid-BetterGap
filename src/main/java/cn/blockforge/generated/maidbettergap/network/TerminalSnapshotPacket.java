@@ -1,9 +1,9 @@
 package cn.blockforge.generated.maidbettergap.network;
 
-import cn.blockforge.generated.maidbettergap.client.GapTerminalScreen;
 import cn.blockforge.generated.maidbettergap.gap.TerminalSnapshot;
-import net.minecraft.client.Minecraft;
 import net.minecraft.network.FriendlyByteBuf;
+import net.minecraftforge.api.distmarker.Dist;
+import net.minecraftforge.fml.loading.FMLEnvironment;
 import net.minecraftforge.network.NetworkEvent;
 
 import java.util.function.Supplier;
@@ -31,17 +31,13 @@ public class TerminalSnapshotPacket {
 
     public void handle(Supplier<NetworkEvent.Context> ctxSupplier) {
         NetworkEvent.Context ctx = ctxSupplier.get();
-        // consumerMainThread：已经处于主线程，直接打开/刷新界面
-        Minecraft mc = Minecraft.getInstance();
-        if (open) {
-            if (!(mc.screen instanceof GapTerminalScreen)) {
-                mc.setScreen(new GapTerminalScreen(snapshot));
-            } else {
-                ((GapTerminalScreen) mc.screen).updateSnapshot(snapshot);
-            }
-        } else if (mc.screen instanceof GapTerminalScreen screen) {
-            screen.updateSnapshot(snapshot);
+        // 只在客户端把活儿交给 client 包里的处理类。
+        // 这个类（含 handle 方法）在服务端也会被加载，所以这里绝不能直接引用
+        // Minecraft/Screen 等界面类——专用服务器加载它们会当场崩溃。
+        if (FMLEnvironment.dist == Dist.CLIENT) {
+            cn.blockforge.generated.maidbettergap.client.TerminalSnapshotClientHandler.handle(this, ctx);
+        } else {
+            ctx.setPacketHandled(true);
         }
-        ctx.setPacketHandled(true);
     }
 }

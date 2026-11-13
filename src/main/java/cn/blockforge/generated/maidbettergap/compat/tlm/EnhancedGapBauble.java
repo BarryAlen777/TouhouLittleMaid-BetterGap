@@ -90,8 +90,14 @@ public final class EnhancedGapBauble implements IMaidBauble {
         // 升级迁移兜底（R0）：净化必须放在 guiOpening / 搬运间隔检查之前。
         // 玩家打开女仆界面时，车万女仆会把饰品栏物品同步给客户端；如果等到 100 tick 的那一轮
         // 才洗，旧存档里的脏名单就先发出去了。净化本身干净时几乎零成本（不写 NBT）。
-        GapItemData.sanitizeFilters(baubleItem);
-        if (maid.guiOpening) {
+        //
+        // 频率：打开界面时每 tick 洗（要保证界面拿到干净数据）；平时和背包物品一样 20 tick 一次。
+        // 之前是每个 tick 都扫一遍（最多 81 个名单条目），几十只戴隙间的女仆时纯属白烧 CPU。
+        boolean guiOpening = maid.guiOpening;
+        if (guiOpening || asEntity.tickCount % 20 == 0) {
+            GapItemData.sanitizeFilters(baubleItem);
+        }
+        if (guiOpening) {
             return;
         }
         int interval = Math.max(20, MaidGapConfig.MAID_IO_INTERVAL.get());
@@ -118,8 +124,10 @@ public final class EnhancedGapBauble implements IMaidBauble {
                 ? SophBackpackBridge.wornBackpacks(asEntity)
                 : java.util.Collections.emptyList();
         // 保护：同一个物理容器每轮只搬一次。两条绑定指向同一个方块（重复绑定）、
-        // 或指向同一大箱子的左右两半（两半共享一个 54 格背包），都算同一个容器，只搬第一遍。
-        java.util.Set<String> handledContainers = new java.util.HashSet<>();
+        // 或指向同一大箱子的左右两半（两半共享一个 54 格背包），都算同一个容器，只走一遍。
+        // 合并时两份名单按各自的模式合并（见 mergeAllowed）——之前是直接跳过第二条，
+        // 玩家给第二个绑定单独设的名单等于白设，现在两份都生效。
+        java.util.Map<String, ContainerPlan> plans = new java.util.LinkedHashMap<>();
         for (Binding b : bindings) {
             if (b.isFluid()) {
                 continue; // 液体只走玩家终端取桶，女仆不搬流体
@@ -128,13 +136,19 @@ public final class EnhancedGapBauble implements IMaidBauble {
             if (chest == null) {
                 continue;
             }
-            if (!handledContainers.add(chest.key())) {
-                continue; // 这一轮已经搬过这个容器了
-            }
-            IItemHandler items = chest.items();
             // 每个容器用自己的过滤名单：这个容器单独设过名单就只认它自己的，
             // 没设过就沿用隙间上的共用名单（老存档行为不变）。
             java.util.function.Predicate<ItemStack> allowed = GapItemData.filterPredicate(baubleItem, b);
+            boolean blacklist = GapItemData.isBlacklist(baubleItem, b);
+            ContainerPlan prev = plans.get(chest.key());
+            plans.put(chest.key(), prev == null
+                    ? new ContainerPlan(chest, allowed, blacklist)
+                    : new ContainerPlan(prev.chest(), mergeAllowed(prev, allowed, blacklist),
+                            prev.blacklist() || blacklist));
+        }
+        for (ContainerPlan plan : plans.values()) {
+            IItemHandler items = plan.chest().items();
+            java.util.function.Predicate<ItemStack> allowed = plan.allowed();
             if (maidToChest) {
                 moved |= maidToChest(asEntity, maidInv, items, allowed, slotLock, cap);
                 moved |= backpacksToChest(asEntity, backpacks, items, allowed, cap);
@@ -154,6 +168,28 @@ public final class EnhancedGapBauble implements IMaidBauble {
 
     /** 解析结果：容器物品栏 + 用于「每轮只搬一次」去重的容器身份键。 */
     private record ResolvedChest(IItemHandler items, String key) {}
+
+    /** 一轮搬运计划：一个物理容器 + 它这一轮合并后的过滤名单及其黑名单模式。 */
+    private record ContainerPlan(ResolvedChest chest, java.util.function.Predicate<ItemStack> allowed,
+                                 boolean blacklist) {}
+
+    /**
+     * 多条绑定指向同一个物理容器时，合并两份名单的生效规则：
+     * <ul>
+     *   <li>白名单 + 白名单：任一名单里有就搬（OR）——两份名单都算数，符合“分开设置都生效”的承诺；</li>
+     *   <li>黑名单 + 黑名单：任何一边禁了就不搬（对允许集取 AND）——之前一律 OR 会退化成
+     *       “两边同时禁才拦”，玩家在一个绑定里禁的物品照搬，静默违背预期；</li>
+     *   <li>白名单 + 黑名单：白名单先圈定范围、黑名单再从中剔除（AND）——OR 会让黑名单
+     *       对名单外的物品几乎全放行，白名单形同虚设。</li>
+     * </ul>
+     * 一句话：只要有一份是黑名单就取交集；两份都是白名单才取并集。
+     */
+    private static java.util.function.Predicate<ItemStack> mergeAllowed(
+            ContainerPlan prev, java.util.function.Predicate<ItemStack> next, boolean nextBlacklist) {
+        return (prev.blacklist() || nextBlacklist)
+                ? prev.allowed().and(next)
+                : prev.allowed().or(next);
+    }
 
     private static ResolvedChest resolveChest(Entity maidEntity, Binding b) {
         Level level = maidEntity.level();

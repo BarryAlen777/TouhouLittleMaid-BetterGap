@@ -1,7 +1,13 @@
 package cn.blockforge.generated.maidbettergap;
 
+import com.mojang.logging.LogUtils;
 import net.minecraftforge.common.ForgeConfigSpec;
+import org.slf4j.Logger;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -11,6 +17,15 @@ import java.util.Locale;
  * 绑定距离 / 无限距离模式 / 模组白名单 / 拿取预设 / 自动补货 / 反馈开关 / 增强原版隙间。
  */
 public final class MaidGapConfig {
+
+    private static final Logger LOGGER = LogUtils.getLogger();
+
+    /** 配置文件在 config 目录里的名字（和 GeneratedMod 注册时保持一致）。 */
+    public static final String CONFIG_FILE_NAME = "maid_gap_enhanced-common.toml";
+    /** 现在的键名：哪些物品也算「隙间」。 */
+    private static final String EXTRA_KEY = "enhanced_gap_items";
+    /** 1.3.1 及以前的旧键名（升级时自动改名，不能让老配置里的物品悄悄失效）。 */
+    private static final String LEGACY_EXTRA_KEY = "extra_gap_items";
 
     public static final ForgeConfigSpec SPEC;
 
@@ -106,8 +121,9 @@ public final class MaidGapConfig {
                 .define("sophisticated_backpacks", true);
         EXTRA_GAP_ITEMS = b
                 .comment("这些物品 ID 也会被当作“隙间”：可进女仆饰品栏、潜行+右键绑定、按 G 打开增强终端。",
-                        "默认包含车万女仆原版隙间。例如: [\"touhou_little_maid:wireless_io\", \"some_maid_mod:maid_gap\"]")
-                .defineListAllowEmpty("enhanced_gap_items",
+                        "默认包含车万女仆原版隙间。例如: [\"touhou_little_maid:wireless_io\", \"some_maid_mod:maid_gap\"]",
+                        "（旧版本的键名是 extra_gap_items；升级时会自动改名迁移，不用手动搬。）")
+                .defineListAllowEmpty(EXTRA_KEY,
                         () -> List.of("touhou_little_maid:wireless_io"),
                         o -> o instanceof String s && s.indexOf(':') > 0);
         b.pop();
@@ -163,6 +179,134 @@ public final class MaidGapConfig {
     }
 
     private MaidGapConfig() {}
+
+    /**
+     * 升级迁移：把老配置里的 {@code extra_gap_items} 原地改名成 {@code enhanced_gap_items}。
+     *
+     * 为什么必须在「配置被读取之前」动文件：Forge 读配置时只认 SPEC 里定义过的键，
+     * 文件里多出来的 {@code extra_gap_items} 会被当成多余的键丢掉（下次保存就彻底没了），
+     * 玩家自己加进去的隙间物品就会悄悄失效——不能进饰品栏、不能潜行绑定、按 G 也不开终端。
+     * 那时改内存里的值已经没用（旧键根本没被读进来），所以只能抢在读取之前把文件里的键名换掉：
+     * 值原样保留，玩家一个字都不用改。
+     *
+     * 由 GeneratedMod 在模组构造阶段调用（那时配置还没加载）。整个方法不抛异常，
+     * 读不到文件、写不进去都只记一条日志，绝不影响开服。
+     *
+     * 两个边界保护（复审指出，均已核实）：
+     * <ul>
+     *   <li>值块完整性：Forge 的 TOML 把长列表写成多行数组（{@code key = [} 换行逐条 {@code ]} 收尾）。
+     *       注释旧键时必须连值块整块注释，只注释首行会留下 {@code "物品id",} 和 {@code ]} 孤儿行，
+     *       整个配置文件解析失败、全部设置被重置回默认；</li>
+     *   <li>重复出现：同一文件里出现多条旧键时（手改、合并配置导致），全部改名会造出重复键、
+     *       只处理最后一条会留下死键。这里改成：第一条改名生效，其余整块注释。</li>
+     * </ul>
+     */
+    public static void migrateLegacyConfig(Path configDir) {
+        if (configDir == null) {
+            return;
+        }
+        Path file = configDir.resolve(CONFIG_FILE_NAME);
+        if (!Files.isRegularFile(file)) {
+            return;
+        }
+        try {
+            List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+            boolean hasNew = false;
+            List<int[]> legacyRanges = new ArrayList<>(); // 每条旧键的 {起始行, 结束行}（含多行值块）
+            int i = 0;
+            while (i < lines.size()) {
+                KeyEntry e = parseEntry(lines, i);
+                if (e == null) {
+                    i++;
+                    continue;
+                }
+                if (e.key().equals(EXTRA_KEY)) {
+                    hasNew = true;
+                } else if (e.key().equals(LEGACY_EXTRA_KEY)) {
+                    legacyRanges.add(new int[] {e.start(), e.end()});
+                }
+                i = e.end() + 1; // 整块跳过：数组值里的行不会被当成配置键来解析
+            }
+            if (legacyRanges.isEmpty()) {
+                return; // 没有旧键，什么都不用做（升级过、或全新安装）
+            }
+            String note = "   # 旧键名，已由 " + EXTRA_KEY + " 取代，本模组不再读取";
+            if (hasNew) {
+                // 两个键都在：改名会变成重复键导致读不出来，所以把旧键（整块）注释掉并提示一次
+                for (int[] r : legacyRanges) {
+                    commentOut(lines, r[0], r[1], note);
+                }
+                Files.write(file, lines, StandardCharsets.UTF_8);
+                LOGGER.warn("[maid_better_gap] 配置文件里同时有 {} 和 {}，已把旧键注释掉；"
+                        + "以后只改 {} 即可。", LEGACY_EXTRA_KEY, EXTRA_KEY, EXTRA_KEY);
+                return;
+            }
+            // 只改键名，后面的值（物品 ID 列表，含多行数组）整块原样不动
+            int[] first = legacyRanges.get(0);
+            String line = lines.get(first[0]);
+            int at = line.indexOf(LEGACY_EXTRA_KEY);
+            lines.set(first[0], line.substring(0, at) + EXTRA_KEY
+                    + line.substring(at + LEGACY_EXTRA_KEY.length()));
+            // 万一文件里有多条旧键：保留刚改名的第一条，其余整块注释，避免造出重复键
+            for (int k = 1; k < legacyRanges.size(); k++) {
+                commentOut(lines, legacyRanges.get(k)[0], legacyRanges.get(k)[1], note);
+            }
+            Files.write(file, lines, StandardCharsets.UTF_8);
+            LOGGER.info("[maid_better_gap] 已把旧配置键 {} 迁移为 {}，里面登记的隙间物品照旧生效。",
+                    LEGACY_EXTRA_KEY, EXTRA_KEY);
+        } catch (IOException | RuntimeException ex) {
+            // 配置文件损坏、只读之类的情况：提示一次即可，配置本身还有默认值兜底
+            LOGGER.warn("[maid_better_gap] 旧配置键迁移失败（不影响开服），"
+                    + "如需手动迁移，请把 {} 的内容复制到 {}。", LEGACY_EXTRA_KEY, EXTRA_KEY, ex);
+        }
+    }
+
+    /** 一条「键 = 值」配置项：键名 + 它的完整行范围（多行数组值块也整体算在内）。 */
+    private record KeyEntry(String key, int start, int end) {}
+
+    /**
+     * 解析第 i 行是不是一个配置键；是则返回它连同多行值块的完整范围。
+     * 空行、注释、小节头、以及多行数组的中间行都会返回 null（不是键，跳过即可）。
+     */
+    private static KeyEntry parseEntry(List<String> lines, int i) {
+        String trimmed = lines.get(i).trim();
+        // 跳过空行和注释行：注释里出现的键名不算真的配置项
+        if (trimmed.isEmpty() || trimmed.startsWith("#")) {
+            return null;
+        }
+        int eq = trimmed.indexOf('=');
+        if (eq <= 0) {
+            return null;
+        }
+        String key = unquoteKey(trimmed.substring(0, eq).trim());
+        int end = i;
+        String value = trimmed.substring(eq + 1).trim();
+        // 多行数组：同行没等到收尾的 ]，往下找到 ] 那行为止（找不到就按单行处理，文件本身坏了不自责）
+        if (value.startsWith("[") && !value.contains("]")) {
+            for (int j = i + 1; j < lines.size(); j++) {
+                if (lines.get(j).contains("]")) {
+                    end = j;
+                    break;
+                }
+            }
+        }
+        return new KeyEntry(key, i, end);
+    }
+
+    /** 把 [start, end] 范围的行整块注释掉，起始行末尾附一句说明。 */
+    private static void commentOut(List<String> lines, int start, int end, String note) {
+        for (int j = start; j <= end; j++) {
+            lines.set(j, "# " + lines.get(j) + (j == start ? note : ""));
+        }
+    }
+
+    /** TOML 的键名可能带引号（"key" = ...），比较前先去掉。 */
+    private static String unquoteKey(String key) {
+        if (key.length() >= 2 && key.startsWith("\"") && key.endsWith("\"")) {
+            return key.substring(1, key.length() - 1);
+        }
+        return key;
+    }
 
     public static List<Integer> pickupPresets() {
         List<Integer> out = new ArrayList<>();

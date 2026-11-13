@@ -183,6 +183,13 @@ public final class GapInteractions {
      * 掉在地上的旧隙间：区块加载或玩家走近时，物品实体里的物品会随同步发给客户端。
      * 如果名单又脏又大，玩家还没伸手去捡就可能被踢下线，所以实体刚进世界时先洗一遍
      * （干净时零写入，成本可以忽略）。箱子里的旧隙间不在这个覆盖范围内——拿一次就干净。
+     *
+     * 这个事件对新丢的和从存档/区块加载出来的物品实体都会触发（Forge 用
+     * {@code EntityJoinLevelEvent#loadedFromDisk()} 区分来源），所以「丢地上→存盘→重进」也洗得到。
+     *
+     * 成本：世界里掉落物很多（每只怪物、每个方块掉落都是一个），所以先做最便宜的判断——
+     * 没有 NBT 的物品直接跳过（净化本来就只动 NBT，没 NBT 等于干净），
+     * 这样绝大多数掉落物连注册表/配置查询都不会走。
      */
     @SubscribeEvent
     public static void onItemEntityJoinLevel(EntityJoinLevelEvent event) {
@@ -191,7 +198,10 @@ public final class GapInteractions {
         }
         if (event.getEntity() instanceof ItemEntity drop) {
             ItemStack stack = drop.getItem();
-            if (!stack.isEmpty() && ContainerService.isGapItem(stack)) {
+            if (stack.isEmpty() || !stack.hasTag()) {
+                return;
+            }
+            if (ContainerService.isGapItem(stack)) {
                 GapItemData.sanitizeFilters(stack);
             }
         }
