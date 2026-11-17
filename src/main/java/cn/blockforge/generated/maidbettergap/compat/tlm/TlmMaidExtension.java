@@ -8,7 +8,7 @@ import com.github.tartaricacid.touhoulittlemaid.api.bauble.IMaidBauble;
 import com.github.tartaricacid.touhoulittlemaid.item.bauble.BaubleManager;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.item.Item;
-import net.minecraftforge.registries.ForgeRegistries;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.List;
 import java.util.Locale;
@@ -64,7 +64,7 @@ public class TlmMaidExtension implements ILittleMaid {
 
         // 2) 直接增强原模组隙间（配置可关）
         if (MaidGapConfig.ENHANCE_ORIGINAL_GAP.get()) {
-            bindOne(manager, bauble, ForgeRegistries.ITEMS.getValue(ORIGINAL_GAP_ID));
+            bindOne(manager, bauble, BuiltInRegistries.ITEM.get(ORIGINAL_GAP_ID));
         }
 
         // 3) 配置里额外登记的隙间物品也一并变成饰品
@@ -78,7 +78,7 @@ public class TlmMaidExtension implements ILittleMaid {
                 if (rl == null || rl.equals(ORIGINAL_GAP_ID)) {
                     continue;
                 }
-                bindOne(manager, bauble, ForgeRegistries.ITEMS.getValue(rl));
+                bindOne(manager, bauble, BuiltInRegistries.ITEM.get(rl));
             }
         }
     }
@@ -95,10 +95,10 @@ public class TlmMaidExtension implements ILittleMaid {
             manager.bind(item, bauble);
         } catch (LinkageError err) {
             LOGGER.error("[maid_better_gap] 饰品接口不匹配，已跳过 {} 的饰品注册。",
-                    ForgeRegistries.ITEMS.getKey(item), err);
+                    BuiltInRegistries.ITEM.getKey(item), err);
         } catch (Exception ex) {
             LOGGER.error("[maid_better_gap] 饰品注册失败，已跳过 {}。",
-                    ForgeRegistries.ITEMS.getKey(item), ex);
+                    BuiltInRegistries.ITEM.getKey(item), ex);
         }
     }
 }

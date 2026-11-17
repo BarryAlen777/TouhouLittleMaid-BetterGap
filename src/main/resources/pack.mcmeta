@@ -1,6 +1,10 @@
 {
   "pack": {
-    "pack_format": 15,
-    "description": "车万女仆：更好的隙间 resources"
+    "pack_format": 34,
+    "supported_formats": {
+      "min_inclusive": 15,
+      "max_inclusive": 999
+    },
+    "description": "女仆：更好的隙间·neoforge 1.21.1 resources"
   }
 }

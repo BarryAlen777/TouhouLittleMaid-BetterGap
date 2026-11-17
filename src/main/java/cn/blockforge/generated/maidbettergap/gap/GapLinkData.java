@@ -42,7 +42,7 @@ public final class GapLinkData {
     /** 终端里存的所有女仆（老格式会当成只有一只）。 */
     public static List<MaidRef> maids(ItemStack stack) {
         List<MaidRef> out = new ArrayList<>();
-        CompoundTag tag = stack.getTag();
+        CompoundTag tag = StackData.get(stack);
         if (tag == null) {
             return out;
         }
@@ -69,7 +69,7 @@ public final class GapLinkData {
     /** 当前正在管理的那只女仆（列表里没有时退回列表第一只）。 */
     @Nullable
     public static UUID activeUuid(ItemStack stack) {
-        CompoundTag tag = stack.getTag();
+        CompoundTag tag = StackData.get(stack);
         if (tag != null) {
             UUID active = parse(tag.getString(K_ACTIVE));
             if (active != null) {
@@ -98,7 +98,7 @@ public final class GapLinkData {
                 }
             }
         }
-        CompoundTag tag = stack.getTag();
+        CompoundTag tag = StackData.get(stack);
         return tag == null ? "" : tag.getString(K_LINK_NAME);
     }
 
@@ -165,7 +165,6 @@ public final class GapLinkData {
     // ------------------------------------------------------------------
 
     private static void writeMaids(ItemStack stack, List<MaidRef> list, @Nullable UUID active) {
-        CompoundTag tag = stack.getOrCreateTag();
         ListTag lt = new ListTag();
         for (MaidRef r : list) {
             CompoundTag e = new CompoundTag();
@@ -173,21 +172,24 @@ public final class GapLinkData {
             e.putString(K_M_NAME, r.name() == null ? "" : r.name());
             lt.add(e);
         }
-        tag.put(K_MAIDS, lt);
         MaidRef act = active == null ? null : find(list, active);
         if (act == null && !list.isEmpty()) {
             act = list.get(0);
         }
-        if (act == null) {
-            tag.remove(K_ACTIVE);
-            tag.remove(K_LINK_UUID);
-            tag.remove(K_LINK_NAME);
-        } else {
-            // 老键继续同步，其它地方（悬停提示、旧版本存档）照常可读
-            tag.putString(K_ACTIVE, act.uuid().toString());
-            tag.putString(K_LINK_UUID, act.uuid().toString());
-            tag.putString(K_LINK_NAME, act.name() == null ? "" : act.name());
-        }
+        final MaidRef current = act;
+        StackData.update(stack, tag -> {
+            tag.put(K_MAIDS, lt);
+            if (current == null) {
+                tag.remove(K_ACTIVE);
+                tag.remove(K_LINK_UUID);
+                tag.remove(K_LINK_NAME);
+            } else {
+                // 老键继续同步，其它地方（悬停提示、旧版本存档）照常可读
+                tag.putString(K_ACTIVE, current.uuid().toString());
+                tag.putString(K_LINK_UUID, current.uuid().toString());
+                tag.putString(K_LINK_NAME, current.name() == null ? "" : current.name());
+            }
+        });
     }
 
     @Nullable

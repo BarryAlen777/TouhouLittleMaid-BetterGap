@@ -23,15 +23,15 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.common.capabilities.ForgeCapabilities;
-import net.minecraftforge.fluids.FluidStack;
-import net.minecraftforge.fluids.FluidUtil;
-import net.minecraftforge.fluids.capability.IFluidHandler;
-import net.minecraftforge.items.IItemHandler;
-import net.minecraftforge.items.ItemHandlerHelper;
-import net.minecraftforge.items.wrapper.InvWrapper;
-import net.minecraftforge.registries.ForgeRegistries;
-import net.minecraftforge.fml.ModList;
+import net.neoforged.neoforge.capabilities.Capabilities;
+import net.neoforged.neoforge.fluids.FluidStack;
+import net.neoforged.neoforge.fluids.FluidUtil;
+import net.neoforged.neoforge.fluids.capability.IFluidHandler;
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemHandlerHelper;
+import net.neoforged.neoforge.items.wrapper.InvWrapper;
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.neoforged.fml.ModList;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -109,7 +109,7 @@ public final class ContainerService {
         if (extra == null || extra.isEmpty()) {
             return false;
         }
-        ResourceLocation key = ForgeRegistries.ITEMS.getKey(stack.getItem());
+        ResourceLocation key = BuiltInRegistries.ITEM.getKey(stack.getItem());
         if (key == null) {
             return false;
         }
@@ -358,12 +358,17 @@ public final class ContainerService {
     }
 
     public static IItemHandler findItems(BlockEntity be) {
-        IItemHandler h = be.getCapability(ForgeCapabilities.ITEM_HANDLER, null).resolve().orElse(null);
+        // 1.21.1：能力查询走 level（返回可直接为 null，没有旧版 LazyOptional 了）。
+        // 语义与旧版一致：先试「无朝向」（部分方块只在 null 侧暴露合并口），再逐面找。
+        if (be.getLevel() == null) {
+            return null;
+        }
+        IItemHandler h = be.getLevel().getCapability(Capabilities.ItemHandler.BLOCK, be.getBlockPos(), (Direction) null);
         if (h != null) {
             return h;
         }
         for (Direction d : Direction.values()) {
-            h = be.getCapability(ForgeCapabilities.ITEM_HANDLER, d).resolve().orElse(null);
+            h = be.getLevel().getCapability(Capabilities.ItemHandler.BLOCK, be.getBlockPos(), d);
             if (h != null) {
                 return h;
             }
@@ -372,12 +377,15 @@ public final class ContainerService {
     }
 
     public static IFluidHandler findFluids(BlockEntity be) {
-        IFluidHandler h = be.getCapability(ForgeCapabilities.FLUID_HANDLER, null).resolve().orElse(null);
+        if (be.getLevel() == null) {
+            return null;
+        }
+        IFluidHandler h = be.getLevel().getCapability(Capabilities.FluidHandler.BLOCK, be.getBlockPos(), (Direction) null);
         if (h != null) {
             return h;
         }
         for (Direction d : Direction.values()) {
-            h = be.getCapability(ForgeCapabilities.FLUID_HANDLER, d).resolve().orElse(null);
+            h = be.getLevel().getCapability(Capabilities.FluidHandler.BLOCK, be.getBlockPos(), d);
             if (h != null) {
                 return h;
             }
@@ -458,7 +466,7 @@ public final class ContainerService {
             e.tagMatch = GapItemData.isTagMatch(gap, b);
             e.filters = GapItemData.filters(gap, b);
             if (r.blockEntity != null) {
-                ResourceLocation blockKey = ForgeRegistries.BLOCKS.getKey(r.blockEntity.getBlockState().getBlock());
+                ResourceLocation blockKey = BuiltInRegistries.BLOCK.getKey(r.blockEntity.getBlockState().getBlock());
                 e.blockId = blockKey == null ? "" : blockKey.toString();
             }
             if (r.status == TerminalSnapshot.STATUS_OK && listed < stackBudget) {
@@ -512,7 +520,7 @@ public final class ContainerService {
         // 解析全部绑定和复制女仆背包），最后给玩家一句“只显示了一部分”。
         TerminalSnapshot full = build(sp, MAX_TOTAL_STACKS);
         TerminalSnapshot snap = full;
-        int size = encodedSize(full);
+        int size = encodedSize(full, sp.server.registryAccess());
         boolean truncated = false;
         if (size > MAX_SNAPSHOT_BYTES) {
             truncated = true;
@@ -523,14 +531,14 @@ public final class ContainerService {
                 long guess = (long) stacks * MAX_SNAPSHOT_BYTES / Math.max(1, size);
                 stacks = (int) Math.max(0L, Math.min(stacks - 1L, Math.max(stacks / 2L, guess)));
                 snap = trimmed(full, stacks, maidKeep);
-                size = encodedSize(snap);
+                size = encodedSize(snap, sp.server.registryAccess());
             }
             // ② 容器物品砍光还超：女仆背包那 38 格也参与裁剪
             //   （38 个塞满 NBT 的潜影盒同样能撑爆 1 MB，只砍容器是不够的）
             while (size > MAX_SNAPSHOT_BYTES && maidKeep > 0) {
                 maidKeep = Math.max(0, Math.min(maidKeep - 1, maidKeep / 2));
                 snap = trimmed(full, stacks, maidKeep);
-                size = encodedSize(snap);
+                size = encodedSize(snap, sp.server.registryAccess());
             }
             // ③ 实在编不出来（某个物品的 NBT 写坏了）：至少发一个结构完整的空界面，
             //   并且明确告诉玩家“没显示全”，别让他以为东西丢了
@@ -691,14 +699,17 @@ public final class ContainerService {
     }
 
     /** 这个快照编码成网络包大概多大（字节）。 */
-    private static int encodedSize(TerminalSnapshot snap) {
-        net.minecraft.network.FriendlyByteBuf probe =
-                new net.minecraft.network.FriendlyByteBuf(io.netty.buffer.Unpooled.buffer());
+    private static int encodedSize(TerminalSnapshot snap, net.minecraft.core.RegistryAccess registries) {
+        net.minecraft.network.RegistryFriendlyByteBuf probe =
+                new net.minecraft.network.RegistryFriendlyByteBuf(io.netty.buffer.Unpooled.buffer(), registries,
+                        net.neoforged.neoforge.network.connection.ConnectionType.NEOFORGE);
         try {
             snap.encode(probe);
             return probe.writerIndex();
-        } catch (RuntimeException ex) {
-            // 个别物品的 NBT 编不出来（模组自己写坏了 NBT）时，按“已经超限”处理，走精简路线
+        } catch (RuntimeException | LinkageError ex) {
+            // 个别物品的 NBT 编不出来（模组自己写坏了 NBT）、或某件模组物品的组件编码器
+            // 引用的类缺失（LinkageError）时，按“已经超限”处理，走精简路线。
+            // 只接 RuntimeException 会让 Error 顺着 send() 冒进包处理（r42 复审）。
             return Integer.MAX_VALUE;
         } finally {
             probe.release();
@@ -926,7 +937,7 @@ public final class ContainerService {
                         // 这里用 < 而不是 !=：大罐子（比如 8000 mB 的储罐）本来就比一桶多，照样能换。
                         if (tank.getAmount() < BUCKET_VOLUME) {
                             sp.displayClientMessage(Component.translatable("msg.maidgap.not_enough_fluid",
-                                            tank.getDisplayName(), String.valueOf(tank.getAmount()),
+                                            tank.getHoverName(), String.valueOf(tank.getAmount()),
                                             String.valueOf(BUCKET_VOLUME))
                                     .withStyle(ChatFormatting.RED), true);
                         } else {
@@ -934,7 +945,7 @@ public final class ContainerService {
                             ItemStack bucket = FluidUtil.getFilledBucket(oneBucket);
                             if (bucket.isEmpty()) {
                                 sp.displayClientMessage(Component.translatable("msg.maidgap.no_bucket",
-                                                tank.getDisplayName())
+                                                tank.getHoverName())
                                         .withStyle(ChatFormatting.RED), true);
                             } else {
                                 FluidStack drained = r.fluids.drain(oneBucket, IFluidHandler.FluidAction.EXECUTE);
@@ -952,7 +963,7 @@ public final class ContainerService {
                                     } else {
                                         sp.displayClientMessage(Component.translatable(
                                                         "msg.maidgap.drain_short",
-                                                        tank.getDisplayName(), String.valueOf(drained.getAmount()),
+                                                        tank.getHoverName(), String.valueOf(drained.getAmount()),
                                                         String.valueOf(BUCKET_VOLUME))
                                                 .withStyle(ChatFormatting.RED), true);
                                     }
@@ -1144,7 +1155,7 @@ public final class ContainerService {
             boolean movedHere = false;
             for (int slot = 0; slot < h.getSlots() && need > 0; slot++) {
                 ItemStack cs = h.getStackInSlot(slot);
-                if (cs.isEmpty() || !ItemStack.isSameItemSameTags(cs, match)) {
+                if (cs.isEmpty() || !ItemStack.isSameItemSameComponents(cs, match)) {
                     continue;
                 }
                 int want = Math.min(need, cs.getCount());
@@ -1194,7 +1205,7 @@ public final class ContainerService {
         int slots = Math.min(36, inv.getContainerSize());
         for (int i = 0; i < slots && !rest.isEmpty(); i++) {
             ItemStack slot = inv.getItem(i);
-            if (slot.isEmpty() || !ItemStack.isSameItemSameTags(slot, rest)) {
+            if (slot.isEmpty() || !ItemStack.isSameItemSameComponents(slot, rest)) {
                 continue;
             }
             int move = Math.min(slot.getMaxStackSize() - slot.getCount(), rest.getCount());
@@ -1228,7 +1239,7 @@ public final class ContainerService {
         int n = 0;
         for (int i = 0; i < inv.getSlots(); i++) {
             ItemStack st = inv.getStackInSlot(i);
-            if (!st.isEmpty() && ItemStack.isSameItemSameTags(st, proto)) {
+            if (!st.isEmpty() && ItemStack.isSameItemSameComponents(st, proto)) {
                 n += st.getCount();
             }
         }
@@ -1250,7 +1261,7 @@ public final class ContainerService {
 
     private static boolean containsSame(List<ItemStack> list, ItemStack st) {
         for (ItemStack o : list) {
-            if (ItemStack.isSameItemSameTags(o, st)) {
+            if (ItemStack.isSameItemSameComponents(o, st)) {
                 return true;
             }
         }
@@ -1325,7 +1336,7 @@ public final class ContainerService {
 
     /** 方块的命名空间（拿不到注册名时返回空串，避免 NPE）。 */
     private static String namespaceOf(BlockState state) {
-        ResourceLocation key = ForgeRegistries.BLOCKS.getKey(state.getBlock());
+        ResourceLocation key = BuiltInRegistries.BLOCK.getKey(state.getBlock());
         return key == null ? "" : key.getNamespace();
     }
 

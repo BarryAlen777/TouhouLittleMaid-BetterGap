@@ -1,12 +1,10 @@
 package cn.blockforge.generated.maidbettergap.network;
 
-import cn.blockforge.generated.maidbettergap.GeneratedMod;
-import net.minecraft.resources.ResourceLocation;
+import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraftforge.network.NetworkDirection;
-import net.minecraftforge.network.NetworkRegistry;
-import net.minecraftforge.network.PacketDistributor;
-import net.minecraftforge.network.simple.SimpleChannel;
+import net.neoforged.neoforge.network.PacketDistributor;
+import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
+import net.neoforged.neoforge.network.registration.PayloadRegistrar;
 
 public final class ModNetwork {
 
@@ -16,44 +14,27 @@ public final class ModNetwork {
      * 否则新旧两端会按不同格式读同一串字节，解码错位、轻则掉线重则崩溃。
      */
     private static final String PROTOCOL = "3";
-    public static final SimpleChannel CHANNEL = NetworkRegistry.newSimpleChannel(
-            ResourceLocation.fromNamespaceAndPath(GeneratedMod.MOD_ID, "main"),
-            () -> PROTOCOL,
-            PROTOCOL::equals,
-            PROTOCOL::equals);
-
-    private static int index = 0;
 
     private ModNetwork() {}
 
-    public static void init() {
-        CHANNEL.messageBuilder(TerminalSnapshotPacket.class, index++, NetworkDirection.PLAY_TO_CLIENT)
-                .encoder(TerminalSnapshotPacket::encode)
-                .decoder(TerminalSnapshotPacket::new)
-                .consumerMainThread(TerminalSnapshotPacket::handle)
-                .add();
-        CHANNEL.messageBuilder(GapActionPacket.class, index++, NetworkDirection.PLAY_TO_SERVER)
-                .encoder(GapActionPacket::encode)
-                .decoder(GapActionPacket::new)
-                .consumerMainThread(GapActionPacket::handle)
-                .add();
-        CHANNEL.messageBuilder(OpenTerminalPacket.class, index++, NetworkDirection.PLAY_TO_SERVER)
-                .encoder(OpenTerminalPacket::encode)
-                .decoder(OpenTerminalPacket::new)
-                .consumerMainThread(OpenTerminalPacket::handle)
-                .add();
-        CHANNEL.messageBuilder(SlotLocksPacket.class, index++, NetworkDirection.PLAY_TO_SERVER)
-                .encoder(SlotLocksPacket::encode)
-                .decoder(SlotLocksPacket::new)
-                .consumerMainThread(SlotLocksPacket::handle)
-                .add();
+    /** 挂在模组事件总线上（GeneratedMod 构造里 addListener）。NeoForge 默认在主线程回调 handler。 */
+    public static void register(RegisterPayloadHandlersEvent event) {
+        PayloadRegistrar registrar = event.registrar(PROTOCOL);
+        registrar.playToClient(TerminalSnapshotPacket.TYPE, TerminalSnapshotPacket.STREAM_CODEC,
+                TerminalSnapshotPacket::handle);
+        registrar.playToServer(GapActionPacket.TYPE, GapActionPacket.STREAM_CODEC,
+                GapActionPacket::handle);
+        registrar.playToServer(OpenTerminalPacket.TYPE, OpenTerminalPacket.STREAM_CODEC,
+                OpenTerminalPacket::handle);
+        registrar.playToServer(SlotLocksPacket.TYPE, SlotLocksPacket.STREAM_CODEC,
+                SlotLocksPacket::handle);
     }
 
-    public static void sendToPlayer(ServerPlayer player, Object packet) {
-        CHANNEL.send(PacketDistributor.PLAYER.with(() -> player), packet);
+    public static void sendToPlayer(ServerPlayer player, CustomPacketPayload packet) {
+        PacketDistributor.sendToPlayer(player, packet);
     }
 
-    public static void sendToServer(Object packet) {
-        CHANNEL.sendToServer(packet);
+    public static void sendToServer(CustomPacketPayload packet) {
+        PacketDistributor.sendToServer(packet);
     }
 }

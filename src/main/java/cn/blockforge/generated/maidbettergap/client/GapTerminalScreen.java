@@ -17,8 +17,8 @@ import net.minecraft.resources.ResourceLocation;
 import net.minecraft.world.entity.player.Inventory;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
-import net.minecraftforge.fluids.FluidStack;
-import net.minecraftforge.registries.ForgeRegistries;
+import net.neoforged.neoforge.fluids.FluidStack;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -293,12 +293,12 @@ public class GapTerminalScreen extends Screen {
                 final int realSlot = sel.tankSlots.get(i);
                 FluidStack fs = sel.fluids.get(i);
                 Button bucketBtn = Button.builder(
-                        Component.translatable("maidgap.gui.bucket_of", truncate(fs.getDisplayName().getString(), 8)),
+                        Component.translatable("maidgap.gui.bucket_of", truncate(fs.getHoverName().getString(), 8)),
                         btn -> ModNetwork.sendToServer(
                                 new GapActionPacket(ContainerService.ACT_EXTRACT_BUCKET, selected, realSlot)))
                         .bounds(rx + 58, top + 172 + i * 16, 94, 14).build();
                 bucketBtn.setTooltip(Tooltip.create(Component.literal(
-                        fs.getDisplayName().getString() + ": " + fs.getAmount() + "/" + sel.capacities.get(i) + " mB")));
+                        fs.getHoverName().getString() + ": " + fs.getAmount() + "/" + sel.capacities.get(i) + " mB")));
                 addRenderableWidget(bucketBtn);
             }
         }
@@ -398,7 +398,7 @@ public class GapTerminalScreen extends Screen {
 
     @Override
     public void render(GuiGraphics guiGraphics, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(guiGraphics);
+        this.renderBackground(guiGraphics, mouseX, mouseY, partialTick);
 
         // 整体等比缩放：下面的所有绘制都按“逻辑坐标”写，鼠标坐标换算回逻辑坐标再判定
         guiGraphics.pose().pushPose();
@@ -856,17 +856,17 @@ public class GapTerminalScreen extends Screen {
 
     /** 女仆列表超过一屏时，滚轮上下翻。 */
     @Override
-    public boolean mouseScrolled(double mouseX, double mouseY, double delta) {
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
         double lx = mouseX / scale;
         double ly = mouseY / scale;
         if (lx >= maidLeft && lx < maidLeft + MAID_W && ly >= maidTop && ly < maidTop + MAID_ROWS * MAID_ROW_H) {
             int maxScroll = Math.max(0, snap.maids.size() - MAID_ROWS);
             if (maxScroll > 0) {
-                maidScroll = Math.max(0, Math.min(maxScroll, maidScroll + (delta < 0 ? 1 : -1)));
+                maidScroll = Math.max(0, Math.min(maxScroll, maidScroll + (scrollY < 0 ? 1 : -1)));
                 return true;
             }
         }
-        return super.mouseScrolled(mouseX, mouseY, delta);
+        return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY);
     }
 
     @Override
@@ -961,7 +961,7 @@ public class GapTerminalScreen extends Screen {
         if (id == null) {
             return ItemStack.EMPTY;
         }
-        Block block = ForgeRegistries.BLOCKS.getValue(id);
+        Block block = BuiltInRegistries.BLOCK.get(id);
         if (block == null) {
             return ItemStack.EMPTY;
         }

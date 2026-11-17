@@ -20,9 +20,9 @@ import net.minecraft.world.InteractionResult;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.phys.AABB;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.fml.LogicalSide;
-import net.minecraftforge.items.wrapper.CombinedInvWrapper;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
+import net.neoforged.fml.LogicalSide;
+import net.neoforged.neoforge.items.wrapper.CombinedInvWrapper;
 
 import javax.annotation.Nullable;
 import java.util.ArrayList;
@@ -245,6 +245,10 @@ public final class MaidLinkService {
      * 槽位配置界面要展示的女仆背包内容，固定 38 格：
      * 0-35 = 背包（超出她实际背包大小的格留空），36 = 主手，37 = 副手。
      * 索引语义与原版 SlotConfigData 数组一致（见 EnhancedGapBauble / GapItemData）。
+     *
+     * 精妙 1.3.0+ 的并入补丁会把背包格拼在 getAvailableInv 的<b>手位之后</b>，
+     * 所以「手 = 数组末尾两格」的假设要先扣掉并入的尾段才成立；背包格本身不进这个界面
+     * （槽位锁管不到它们，与搬运的 ownEnd 口径一致）。
      */
     public static List<ItemStack> maidInvDisplay(Object maidObj) {
         List<ItemStack> out = new ArrayList<>(GapItemData.ORIGINAL_SLOT_NUM);
@@ -256,7 +260,10 @@ public final class MaidLinkService {
         }
         try {
             CombinedInvWrapper inv = maid.getAvailableInv(false);
-            int size = inv.getSlots();
+            Entity asEntity = maid;
+            int sophTail = cn.blockforge.generated.maidbettergap.compat.soph.SophBackpackBridge
+                    .mergedTailSlots(asEntity);
+            int size = inv.getSlots() - sophTail; // 女仆自有段（背包格 + 两只手）
             if (size < 2) {
                 return out;
             }

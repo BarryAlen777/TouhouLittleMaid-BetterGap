@@ -5,21 +5,18 @@ import cn.blockforge.generated.maidbettergap.network.ModNetwork;
 import cn.blockforge.generated.maidbettergap.network.OpenTerminalPacket;
 import net.minecraft.client.Minecraft;
 import net.minecraft.world.entity.player.Player;
-import net.minecraftforge.api.distmarker.Dist;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
+import net.neoforged.api.distmarker.Dist;
+import net.neoforged.neoforge.client.event.ClientTickEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
 
-@Mod.EventBusSubscriber(modid = GeneratedMod.MOD_ID, value = Dist.CLIENT)
+@EventBusSubscriber(modid = GeneratedMod.MOD_ID, value = Dist.CLIENT)
 public final class GapClientTicks {
 
     private GapClientTicks() {}
 
     @SubscribeEvent
-    public static void onClientTick(TickEvent.ClientTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) {
-            return;
-        }
+    public static void onClientTick(ClientTickEvent.Post event) {
         if (!ModKeys.OPEN_TERMINAL.consumeClick()) {
             return;
         }

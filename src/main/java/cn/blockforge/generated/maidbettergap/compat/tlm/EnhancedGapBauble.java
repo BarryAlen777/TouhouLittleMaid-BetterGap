@@ -23,10 +23,10 @@ import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.DoubleBlockCombiner;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraftforge.items.IItemHandler;
-import net.minecraftforge.items.ItemHandlerHelper;
-import net.minecraftforge.items.wrapper.CombinedInvWrapper;
-import net.minecraftforge.registries.ForgeRegistries;
+import net.neoforged.neoforge.items.IItemHandler;
+import net.neoforged.neoforge.items.ItemHandlerHelper;
+import net.neoforged.neoforge.items.wrapper.CombinedInvWrapper;
+import net.minecraft.core.registries.BuiltInRegistries;
 
 import java.util.List;
 
@@ -39,7 +39,9 @@ import java.util.List;
  * - 过滤：白名单（空名单不搬运，与原版一致）/ 黑名单（原版 ItemFilterMode + ItemFilterList 键），
  *   可开「类别匹配」：名单条目按物品标签覆盖整类物品（MGFilterTagMatch 键）
  * - 距离：默认受配置 max_bind_distance 限制；开 infinite_range 后可跨维度直连
- * - 尊重终端 / 原版 GUI 设置的女仆槽位锁定（SlotConfigData，双向都生效）
+ * - 尊重终端 / 原版 GUI 设置的女仆槽位锁定（SlotConfigData / 1.21.1 的 slot_config_data 组件，双向都生效）
+ * - 与「女仆精妙」1.3.0+ 的背包并入补丁兼容：并入 getAvailableInv 的背包格不参与女仆侧扫描，
+ *   统一走精妙专通道，避免双倍搬运与槽位锁错位（见 doTick 里的 ownEnd 说明）
  * - 每轮搬运受终端「拿取数量」限制：每个来源槽最多搬这么多（默认 64 = 整组）
  * - 搬运成功时按配置播放原版隙间风格的粒子与音效
  */
@@ -113,16 +115,41 @@ public final class EnhancedGapBauble implements IMaidBauble {
 
         boolean maidToChest = GapItemData.isMaidToChest(baubleItem);
         CombinedInvWrapper maidInv = maid.getAvailableInv(false);
-        boolean[] slotLock = GapItemData.slotLocks(baubleItem, maidInv.getSlots());
+        // 女仆身上「精妙背包」的内部物品栏（没装女仆精妙/精妙背包时是空列表）。
+        // 注意这是背包*内容物*，正常情况下不在 maidInv 里，所以要走单独的通道搬运。
+        List<IItemHandler> backpacks = MaidGapConfig.SOPH_BACKPACKS.get()
+                ? SophBackpackBridge.wornBackpacks(asEntity)
+                : java.util.Collections.emptyList();
+        // 【精妙 1.3.0+ 并入补丁】女仆精妙新版本会把精妙背包 Mixin 并进上面刚拿到的
+        // maidInv 尾部（顺序：女仆格子 → 主手 → 副手 → 背包内容）。此时若不处理：
+        //  ① 背包内容会被 maidInv 通道和 backpacks 专通道各搬一遍（每轮双倍搬运量）；
+        //  ② slotLocks 按「手在数组末尾」重排的兼容逻辑，会把主/副手锁定错挪到背包格上，
+        //     女仆的手反而失去锁定。
+        // 解法：量出并入的尾部格数，从女仆侧视野里整段切掉（搬运只扫 [0, ownEnd)，
+        // 槽位锁也按 ownEnd 对齐——重排逻辑回到正确的「手是自有段最后两格」上），
+        // 背包内容恢复为只走 wornBackpacks 专通道，一遍不多、一遍不少。
+        // 并入检测与 SOPH_BACKPACKS 配置无关：配置只决定我们搬不搬背包，
+        // 不管它开不开，并入的尾段都得从 maidInv 视野里切掉。
+        int mergedTail = SophBackpackBridge.mergedTailSlots(asEntity);
+        // 【R5 兜底，r50 复审】切尾的前提是切下来的那段有专通道接住。两套反射目标是独立的：
+        // mergedTailSlots 只依赖 MaidBackpackInv，wornBackpacks 还依赖 MaidBackpackData.of +
+        // SbCompat.inventoryHandler（usable()）。后者整个失效而前者还活着时 backpacks 为空——
+        // 照切会让背包内容既不在女仆侧视野、也没人替它搬，功能静默停摆（不丢数据但东西不动）。
+        // 专通道空着就把尾段留在女仆侧视野里照常扫：配置开着时最多是「该切没切」的口径差，
+        // 好过「谁都不搬」。配置关着时照切（本来就不该搬背包）。
+        // 【r54】wornBackpacks 已自带并入视图兜底（usable() 失效而 MaidBackpackInv 还活着时
+        // 拿拼接视图当专通道），这里退为最后防线：只有两套反射目标全挂才会走到"不切尾"。
+        if (mergedTail > 0 && backpacks.isEmpty() && MaidGapConfig.SOPH_BACKPACKS.get()) {
+            mergedTail = 0;
+        }
+        int ownEnd = mergedTail > 0
+                ? Math.max(2, maidInv.getSlots() - Math.min(mergedTail, maidInv.getSlots() - 2))
+                : maidInv.getSlots();
+        boolean[] slotLock = GapItemData.slotLocks(baubleItem, ownEnd);
         // 终端里设置的「拿取数量」同样限制女仆每轮搬运：每个来源槽最多搬这么多
         int cap = Math.max(1, GapItemData.pickupAmount(baubleItem));
 
         boolean moved = false;
-        // 女仆身上「精妙背包」的内部物品栏（没装女仆精妙/精妙背包时是空列表）。
-        // 注意这是背包*内容物*，不在 maidInv 里，所以之前只会搬女仆自带背包和物品栏。
-        List<IItemHandler> backpacks = MaidGapConfig.SOPH_BACKPACKS.get()
-                ? SophBackpackBridge.wornBackpacks(asEntity)
-                : java.util.Collections.emptyList();
         // 保护：同一个物理容器每轮只搬一次。两条绑定指向同一个方块（重复绑定）、
         // 或指向同一大箱子的左右两半（两半共享一个 54 格背包），都算同一个容器，只走一遍。
         // 合并时两份名单按各自的模式合并（见 mergeAllowed）——之前是直接跳过第二条，
@@ -150,10 +177,10 @@ public final class EnhancedGapBauble implements IMaidBauble {
             IItemHandler items = plan.chest().items();
             java.util.function.Predicate<ItemStack> allowed = plan.allowed();
             if (maidToChest) {
-                moved |= maidToChest(asEntity, maidInv, items, allowed, slotLock, cap);
+                moved |= maidToChest(asEntity, maidInv, items, allowed, slotLock, cap, ownEnd);
                 moved |= backpacksToChest(asEntity, backpacks, items, allowed, cap);
             } else {
-                moved |= chestToMaid(asEntity, items, maidInv, allowed, slotLock, cap);
+                moved |= chestToMaid(asEntity, items, maidInv, allowed, slotLock, cap, ownEnd);
                 moved |= chestToBackpacks(asEntity, items, backpacks, allowed, cap);
             }
         }
@@ -225,7 +252,7 @@ public final class EnhancedGapBauble implements IMaidBauble {
         if (be == null) {
             return null;
         }
-        ResourceLocation blockKey = ForgeRegistries.BLOCKS.getKey(be.getBlockState().getBlock());
+        ResourceLocation blockKey = BuiltInRegistries.BLOCK.getKey(be.getBlockState().getBlock());
         if (blockKey == null || !MaidGapConfig.modAllowed(blockKey.getNamespace())) {
             return null;
         }
@@ -257,10 +284,16 @@ public final class EnhancedGapBauble implements IMaidBauble {
     // 搬运（过滤语义与原版一致：allowMove = 名单里 ? !黑名单 : 黑名单）
     // ------------------------------------------------------------------
 
+    /**
+     * 女仆自身格子 -> 容器。扫描范围 [0, ownEnd)：
+     * ownEnd 通常是整个 maidInv，只有「精妙并入补丁」生效时才切掉尾部的背包格
+     * （那部分交给 {@link #backpacksToChest} 专通道，避免同一批东西搬两遍）。
+     */
     private static boolean maidToChest(Entity maidEntity, IItemHandler maid, IItemHandler chest,
-                                       java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock, int cap) {
+                                       java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock,
+                                       int cap, int ownEnd) {
         boolean moved = false;
-        for (int i = 0; i < maid.getSlots(); i++) {
+        for (int i = 0; i < ownEnd && i < maid.getSlots(); i++) {
             if (slotLock != null && i < slotLock.length && slotLock[i]) {
                 continue;
             }
@@ -286,8 +319,10 @@ public final class EnhancedGapBauble implements IMaidBauble {
         return moved;
     }
 
+    /** 容器 -> 女仆自身格子：只塞进 [0, ownEnd)（并入的背包尾段除外，走 {@link #chestToBackpacks}）。 */
     private static boolean chestToMaid(Entity maidEntity, IItemHandler chest, IItemHandler maid,
-                                       java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock, int cap) {
+                                       java.util.function.Predicate<ItemStack> allowed, boolean[] slotLock,
+                                       int cap, int ownEnd) {
         boolean moved = false;
         for (int i = 0; i < chest.getSlots(); i++) {
             ItemStack stack = chest.getStackInSlot(i);
@@ -302,7 +337,7 @@ public final class EnhancedGapBauble implements IMaidBauble {
             if (got.isEmpty()) {
                 continue;
             }
-            ItemStack rest = insertSkippingLocked(maid, got, slotLock);
+            ItemStack rest = insertSkippingLocked(maid, got, slotLock, ownEnd);
             if (rest.getCount() < got.getCount()) {
                 moved = true;
             }
@@ -408,19 +443,23 @@ public final class EnhancedGapBauble implements IMaidBauble {
         }
     }
 
-    /** 仿原版：先找可堆叠的槽、再找空槽，跳过被原版 GUI 锁定的女仆槽。 */
-    private static ItemStack insertSkippingLocked(IItemHandler inv, ItemStack stack, boolean[] slotLock) {
+    /**
+     * 仿原版：先找可堆叠的槽、再找空槽，跳过被原版 GUI 锁定的女仆槽。
+     * 只接受 [0, ownEnd) 范围内的槽——「精妙并入补丁」生效时，范围外的那段尾部
+     * 是拼进来的背包格，归 {@link #chestToBackpacks} 管（先自有格、后备包，顺序与配置说明一致）。
+     */
+    private static ItemStack insertSkippingLocked(IItemHandler inv, ItemStack stack, boolean[] slotLock, int ownEnd) {
         if (stack.isEmpty()) {
             return stack;
         }
-        int slots = inv.getSlots();
+        int slots = Math.min(ownEnd, inv.getSlots());
         if (stack.isStackable()) {
             for (int i = 0; i < slots; i++) {
                 if (locked(slotLock, i)) {
                     continue;
                 }
                 ItemStack slot = inv.getStackInSlot(i);
-                if (!slot.isEmpty() && ItemStack.isSameItemSameTags(slot, stack)) {
+                if (!slot.isEmpty() && ItemStack.isSameItemSameComponents(slot, stack)) {
                     stack = inv.insertItem(i, stack, false);
                     if (stack.isEmpty()) {
                         return ItemStack.EMPTY;

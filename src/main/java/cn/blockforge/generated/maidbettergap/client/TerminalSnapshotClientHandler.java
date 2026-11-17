@@ -2,7 +2,7 @@ package cn.blockforge.generated.maidbettergap.client;
 
 import cn.blockforge.generated.maidbettergap.network.TerminalSnapshotPacket;
 import net.minecraft.client.Minecraft;
-import net.minecraftforge.network.NetworkEvent;
+import net.neoforged.neoforge.network.handling.IPayloadContext;
 
 /**
  * 终端快照包的【客户端】处理逻辑。
@@ -16,8 +16,8 @@ public final class TerminalSnapshotClientHandler {
 
     private TerminalSnapshotClientHandler() {}
 
-    /** consumerMainThread：已经处于主线程，可以直接开/刷新界面。 */
-    public static void handle(TerminalSnapshotPacket packet, NetworkEvent.Context ctx) {
+    /** NeoForge 默认主线程回调（HandlerThread.MAIN），可以直接开/刷新界面。 */
+    public static void handle(TerminalSnapshotPacket packet, IPayloadContext context) {
         Minecraft mc = Minecraft.getInstance();
         if (packet.open) {
             if (!(mc.screen instanceof GapTerminalScreen)) {
@@ -28,6 +28,5 @@ public final class TerminalSnapshotClientHandler {
         } else if (mc.screen instanceof GapTerminalScreen screen) {
             screen.updateSnapshot(packet.snapshot);
         }
-        ctx.setPacketHandled(true);
     }
 }

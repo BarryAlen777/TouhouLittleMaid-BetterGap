@@ -79,7 +79,7 @@ public class SlotConfigScreen extends Screen {
 
     @Override
     public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
-        this.renderBackground(g);
+        this.renderBackground(g, mouseX, mouseY, partialTick);
 
         // 整体等比缩放：下面全用逻辑坐标，鼠标坐标换算回逻辑坐标再判定
         g.pose().pushPose();

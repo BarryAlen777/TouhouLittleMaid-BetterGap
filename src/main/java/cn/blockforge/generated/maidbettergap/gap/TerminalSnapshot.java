@@ -1,8 +1,8 @@
 package cn.blockforge.generated.maidbettergap.gap;
 
-import net.minecraft.network.FriendlyByteBuf;
+import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.world.item.ItemStack;
-import net.minecraftforge.fluids.FluidStack;
+import net.neoforged.neoforge.fluids.FluidStack;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -103,12 +103,12 @@ public final class TerminalSnapshot {
 
     public TerminalSnapshot() {}
 
-    public void encode(FriendlyByteBuf buf) {
+    public void encode(RegistryFriendlyByteBuf buf) {
         buf.writeVarInt(pickupAmount);
         buf.writeByteArray(slotLocks);
         buf.writeVarInt(maidSlots.size());
         for (ItemStack ms : maidSlots) {
-            buf.writeItemStack(ms, false);
+            ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, ms);
         }
         buf.writeBoolean(autoRefill);
         buf.writeVarInt(maxContainers);
@@ -118,7 +118,7 @@ public final class TerminalSnapshot {
         buf.writeBoolean(tagMatch);
         buf.writeVarInt(filters.size());
         for (ItemStack f : filters) {
-            buf.writeItemStack(f, false);
+            ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, f);
         }
         buf.writeVarInt(entries.size());
         for (Entry e : entries) {
@@ -134,17 +134,17 @@ public final class TerminalSnapshot {
             buf.writeBoolean(e.tagMatch);
             buf.writeVarInt(e.filters.size());
             for (ItemStack f : e.filters) {
-                buf.writeItemStack(f, false);
+                ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, f);
             }
             buf.writeVarInt(e.stacks.size());
             for (int i = 0; i < e.stacks.size(); i++) {
                 buf.writeVarInt(e.slots.get(i));
-                buf.writeItemStack(e.stacks.get(i), false);
+                ItemStack.OPTIONAL_STREAM_CODEC.encode(buf, e.stacks.get(i));
             }
             buf.writeVarInt(e.fluids.size());
             for (int i = 0; i < e.fluids.size(); i++) {
                 buf.writeVarInt(e.tankSlots.get(i));
-                e.fluids.get(i).writeToPacket(buf);
+                FluidStack.OPTIONAL_STREAM_CODEC.encode(buf, e.fluids.get(i));
                 buf.writeVarInt(e.capacities.get(i));
             }
         }
@@ -166,13 +166,13 @@ public final class TerminalSnapshot {
         buf.writeVarInt(maidLimit);
     }
 
-    public static TerminalSnapshot decode(FriendlyByteBuf buf) {
+    public static TerminalSnapshot decode(RegistryFriendlyByteBuf buf) {
         TerminalSnapshot s = new TerminalSnapshot();
         s.pickupAmount = buf.readVarInt();
         s.slotLocks = buf.readByteArray();
         int maidSlotCount = buf.readVarInt();
         for (int i = 0; i < maidSlotCount; i++) {
-            s.maidSlots.add(buf.readItem());
+            s.maidSlots.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(buf));
         }
         s.autoRefill = buf.readBoolean();
         s.maxContainers = buf.readVarInt();
@@ -182,7 +182,7 @@ public final class TerminalSnapshot {
         s.tagMatch = buf.readBoolean();
         int filterCount = buf.readVarInt();
         for (int i = 0; i < filterCount; i++) {
-            s.filters.add(buf.readItem());
+            s.filters.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(buf));
         }
         int entryCount = buf.readVarInt();
         for (int i = 0; i < entryCount; i++) {
@@ -199,17 +199,17 @@ public final class TerminalSnapshot {
             e.tagMatch = buf.readBoolean();
             int ownFilterCount = buf.readVarInt();
             for (int j = 0; j < ownFilterCount; j++) {
-                e.filters.add(buf.readItem());
+                e.filters.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(buf));
             }
             int stackCount = buf.readVarInt();
             for (int j = 0; j < stackCount; j++) {
                 e.slots.add(buf.readVarInt());
-                e.stacks.add(buf.readItem());
+                e.stacks.add(ItemStack.OPTIONAL_STREAM_CODEC.decode(buf));
             }
             int tankCount = buf.readVarInt();
             for (int j = 0; j < tankCount; j++) {
                 e.tankSlots.add(buf.readVarInt());
-                e.fluids.add(FluidStack.readFromPacket(buf));
+                e.fluids.add(FluidStack.OPTIONAL_STREAM_CODEC.decode(buf));
                 e.capacities.add(buf.readVarInt());
             }
             s.entries.add(e);

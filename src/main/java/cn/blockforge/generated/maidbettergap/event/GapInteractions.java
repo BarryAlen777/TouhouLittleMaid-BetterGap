@@ -14,17 +14,17 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.ItemStack;
 import org.slf4j.Logger;
-import net.minecraftforge.event.TickEvent;
-import net.minecraftforge.event.entity.EntityJoinLevelEvent;
-import net.minecraftforge.event.entity.living.LivingEntityUseItemEvent;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.event.entity.player.PlayerInteractEvent;
-import net.minecraftforge.event.level.BlockEvent;
-import net.minecraftforge.eventbus.api.Event;
-import net.minecraftforge.eventbus.api.EventPriority;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.LogicalSide;
-import net.minecraftforge.fml.common.Mod;
+import net.neoforged.neoforge.common.util.TriState;
+import net.neoforged.neoforge.event.entity.EntityJoinLevelEvent;
+import net.neoforged.neoforge.event.entity.living.LivingEntityUseItemEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.neoforge.event.entity.player.PlayerInteractEvent;
+import net.neoforged.neoforge.event.level.BlockEvent;
+import net.neoforged.neoforge.event.tick.ServerTickEvent;
+import net.neoforged.bus.api.EventPriority;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.LogicalSide;
+import net.neoforged.fml.common.EventBusSubscriber;
 
 /**
  * 隙间增强交互：
@@ -33,7 +33,7 @@ import net.minecraftforge.fml.common.Mod;
  * - 自动补货按配置间隔扫描
  * - 死亡重生保留绑定数据
  */
-@Mod.EventBusSubscriber(modid = "maid_better_gap")
+@EventBusSubscriber(modid = "maid_better_gap")
 public final class GapInteractions {
 
     private static final Logger LOGGER = LogUtils.getLogger();
@@ -77,8 +77,8 @@ public final class GapInteractions {
         if (!ContainerService.tryBindAt((ServerPlayer) player, event.getPos())) {
             return;
         }
-        event.setUseBlock(Event.Result.DENY);
-        event.setUseItem(Event.Result.DENY);
+        event.setUseBlock(TriState.FALSE);
+        event.setUseItem(TriState.FALSE);
         event.setCancellationResult(net.minecraft.world.InteractionResult.SUCCESS);
     }
 
@@ -118,10 +118,7 @@ public final class GapInteractions {
 
     /** 自动补货：按配置间隔扫描开了补货的玩家。 */
     @SubscribeEvent
-    public static void onServerTick(TickEvent.ServerTickEvent event) {
-        if (event.phase != TickEvent.Phase.END) {
-            return;
-        }
+    public static void onServerTick(ServerTickEvent.Post event) {
         if (!MaidGapConfig.AUTO_REFILL_ENABLED.get()) {
             return;
         }
@@ -160,9 +157,14 @@ public final class GapInteractions {
     }
 
     /**
-     * 玩家登录：扫一遍背包里的隙间做升级净化（复审报告 R0）。
+     * 玩家登录：扫一遍随身隙间做升级净化（复审报告 R0）。
      * 本模组的隙间有自己的 inventoryTick 兜底，这里补上「配置白名单里的原版隙间」
      * ——那些物品的 tick 不归我们管，只能在登录时手动洗一次。
+     *
+     * 【R7】扫描范围要盖住副手：getContainerSize() 只有主背包 36 格，副手是独立槽——
+     * 白名单原版隙间躺在副手时既没有我们的 inventoryTick（那是对方物品的类），
+     * 又会在登录时随「活体装备数据」同步给客户端（旁观者也能看到），
+     * 正是 2 MB 撑爆踢人最容易踩而 36 格循环又扫不到的一处。掉线前插在副手就中招。
      *
      * 提醒：登录事件与“服务端发出的第一份背包内容包”谁先谁后没有保证，
      * 极端情况下背包里直接躺着一件 >2 MB 的旧隙间，进服瞬间仍可能被踢一次。
@@ -177,6 +179,10 @@ public final class GapInteractions {
                 GapItemData.sanitizeFilters(stack);
             }
         }
+        ItemStack offhand = player.getOffhandItem();
+        if (!offhand.isEmpty() && ContainerService.isGapItem(offhand)) {
+            GapItemData.sanitizeFilters(offhand);
+        }
     }
 
     /**
@@ -188,8 +194,10 @@ public final class GapInteractions {
      * {@code EntityJoinLevelEvent#loadedFromDisk()} 区分来源），所以「丢地上→存盘→重进」也洗得到。
      *
      * 成本：世界里掉落物很多（每只怪物、每个方块掉落都是一个），所以先做最便宜的判断——
-     * 没有 NBT 的物品直接跳过（净化本来就只动 NBT，没 NBT 等于干净），
+     * 既没有 custom_data、也没有名单组件的物品直接跳过（净化只动这两处，都没有等于干净），
      * 这样绝大多数掉落物连注册表/配置查询都不会走。
+     * 名单组件这项是 r42 复审 P1 补的：1.21.1 纯原版用出来的隙间只有组件、没有 custom_data，
+     * 只看 StackData.has 会把这份“脏数据真身”整个漏掉。
      */
     @SubscribeEvent
     public static void onItemEntityJoinLevel(EntityJoinLevelEvent event) {
@@ -198,7 +206,9 @@ public final class GapInteractions {
         }
         if (event.getEntity() instanceof ItemEntity drop) {
             ItemStack stack = drop.getItem();
-            if (stack.isEmpty() || !stack.hasTag()) {
+            if (stack.isEmpty()
+                    || (!cn.blockforge.generated.maidbettergap.gap.StackData.has(stack)
+                        && !cn.blockforge.generated.maidbettergap.gap.TlmIoComponents.hasFilterList(stack))) {
                 return;
             }
             if (ContainerService.isGapItem(stack)) {

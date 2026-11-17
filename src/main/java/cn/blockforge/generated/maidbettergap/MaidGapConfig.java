@@ -1,7 +1,7 @@
 package cn.blockforge.generated.maidbettergap;
 
 import com.mojang.logging.LogUtils;
-import net.minecraftforge.common.ForgeConfigSpec;
+import net.neoforged.neoforge.common.ModConfigSpec;
 import org.slf4j.Logger;
 
 import java.io.IOException;
@@ -27,40 +27,40 @@ public final class MaidGapConfig {
     /** 1.3.1 及以前的旧键名（升级时自动改名，不能让老配置里的物品悄悄失效）。 */
     private static final String LEGACY_EXTRA_KEY = "extra_gap_items";
 
-    public static final ForgeConfigSpec SPEC;
+    public static final ModConfigSpec SPEC;
 
     // —— 绑定与距离 ——
-    public static final ForgeConfigSpec.IntValue MAX_BIND_DISTANCE;
-    public static final ForgeConfigSpec.BooleanValue INFINITE_RANGE;
-    public static final ForgeConfigSpec.IntValue MAX_BOUND_CONTAINERS;
-    public static final ForgeConfigSpec.BooleanValue ALLOW_FLUID_TANKS;
-    public static final ForgeConfigSpec.ConfigValue<List<? extends String>> MOD_WHITELIST;
+    public static final ModConfigSpec.IntValue MAX_BIND_DISTANCE;
+    public static final ModConfigSpec.BooleanValue INFINITE_RANGE;
+    public static final ModConfigSpec.IntValue MAX_BOUND_CONTAINERS;
+    public static final ModConfigSpec.BooleanValue ALLOW_FLUID_TANKS;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> MOD_WHITELIST;
 
     // —— 取物与补货 ——
-    public static final ForgeConfigSpec.ConfigValue<List<? extends Integer>> PICKUP_PRESETS;
-    public static final ForgeConfigSpec.BooleanValue AUTO_REFILL_ENABLED;
-    public static final ForgeConfigSpec.IntValue AUTO_REFILL_THRESHOLD;
-    public static final ForgeConfigSpec.IntValue AUTO_REFILL_INTERVAL;
+    public static final ModConfigSpec.ConfigValue<List<? extends Integer>> PICKUP_PRESETS;
+    public static final ModConfigSpec.BooleanValue AUTO_REFILL_ENABLED;
+    public static final ModConfigSpec.IntValue AUTO_REFILL_THRESHOLD;
+    public static final ModConfigSpec.IntValue AUTO_REFILL_INTERVAL;
 
     // —— 视觉与音效反馈 ——
-    public static final ForgeConfigSpec.BooleanValue SOUND_FEEDBACK;
-    public static final ForgeConfigSpec.BooleanValue PARTICLE_FEEDBACK;
+    public static final ModConfigSpec.BooleanValue SOUND_FEEDBACK;
+    public static final ModConfigSpec.BooleanValue PARTICLE_FEEDBACK;
 
     // —— 增强目标（兼容原模组的隙间物品） ——
-    public static final ForgeConfigSpec.ConfigValue<List<? extends String>> EXTRA_GAP_ITEMS;
-    public static final ForgeConfigSpec.BooleanValue ENHANCE_ORIGINAL_GAP;
-    public static final ForgeConfigSpec.IntValue MAID_IO_INTERVAL;
-    public static final ForgeConfigSpec.BooleanValue SOPH_BACKPACKS;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> EXTRA_GAP_ITEMS;
+    public static final ModConfigSpec.BooleanValue ENHANCE_ORIGINAL_GAP;
+    public static final ModConfigSpec.IntValue MAID_IO_INTERVAL;
+    public static final ModConfigSpec.BooleanValue SOPH_BACKPACKS;
 
     // —— 类别匹配（按物品标签归类） ——
-    public static final ForgeConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_NAMESPACES;
-    public static final ForgeConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_BLACKLIST;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_NAMESPACES;
+    public static final ModConfigSpec.ConfigValue<List<? extends String>> TAG_MATCH_BLACKLIST;
 
     // —— 隙间终端 ——
-    public static final ForgeConfigSpec.IntValue TERMINAL_MAID_LIMIT;
+    public static final ModConfigSpec.IntValue TERMINAL_MAID_LIMIT;
 
     static {
-        ForgeConfigSpec.Builder b = new ForgeConfigSpec.Builder();
+        ModConfigSpec.Builder b = new ModConfigSpec.Builder();
 
         b.comment("隙间容器绑定与距离 (container binding and distance)").push("binding");
         MAX_BIND_DISTANCE = b
@@ -199,6 +199,9 @@ public final class MaidGapConfig {
      *       整个配置文件解析失败、全部设置被重置回默认；</li>
      *   <li>重复出现：同一文件里出现多条旧键时（手改、合并配置导致），全部改名会造出重复键、
      *       只处理最后一条会留下死键。这里改成：第一条改名生效，其余整块注释。</li>
+     *   <li>双键合并（审查报告 P3）：新键已经存在时不能再简单地把旧键注释掉——旧键里可能有
+     *       玩家自己登记、而新键（多半还是自动生成的默认值）里没有的隙间物品，直接注释会让它们
+     *       静默失效。现在改成先把旧键里新键缺的条目并进新键，再注释旧块，一个都不丢。</li>
      * </ul>
      */
     public static void migrateLegacyConfig(Path configDir) {
@@ -211,7 +214,8 @@ public final class MaidGapConfig {
         }
         try {
             List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
-            boolean hasNew = false;
+            int newStart = -1;
+            int newEnd = -1;
             List<int[]> legacyRanges = new ArrayList<>(); // 每条旧键的 {起始行, 结束行}（含多行值块）
             int i = 0;
             while (i < lines.size()) {
@@ -221,7 +225,10 @@ public final class MaidGapConfig {
                     continue;
                 }
                 if (e.key().equals(EXTRA_KEY)) {
-                    hasNew = true;
+                    if (newStart < 0) {
+                        newStart = e.start();
+                        newEnd = e.end();
+                    }
                 } else if (e.key().equals(LEGACY_EXTRA_KEY)) {
                     legacyRanges.add(new int[] {e.start(), e.end()});
                 }
@@ -231,14 +238,33 @@ public final class MaidGapConfig {
                 return; // 没有旧键，什么都不用做（升级过、或全新安装）
             }
             String note = "   # 旧键名，已由 " + EXTRA_KEY + " 取代，本模组不再读取";
-            if (hasNew) {
-                // 两个键都在：改名会变成重复键导致读不出来，所以把旧键（整块）注释掉并提示一次
+            if (newStart >= 0) {
+                // 两个键都在（1.3.2 迁移过一次、玩家又手工加回旧键，或新旧配置被合并）：
+                // 旧键的值不能直接扔——里面可能有玩家自己登记的隙间物品（审查报告 P3）。
+                // 顺序很讲究：① 先把两边的值都读出来（只读）；② 注释旧块（原地改文本，行号不动）；
+                // ③ 最后才往新块里插行——插完就不再依赖任何旧行号了。
+                List<String> existing = collectQuoted(lines, newStart, newEnd);
+                List<String> missing = new ArrayList<>();
+                for (int[] r : legacyRanges) {
+                    for (String id : collectQuoted(lines, r[0], r[1])) {
+                        if (!existing.contains(id) && !missing.contains(id)) {
+                            missing.add(id);
+                        }
+                    }
+                }
                 for (int[] r : legacyRanges) {
                     commentOut(lines, r[0], r[1], note);
                 }
+                insertIntoArray(lines, newStart, newEnd, missing);
                 Files.write(file, lines, StandardCharsets.UTF_8);
-                LOGGER.warn("[maid_better_gap] 配置文件里同时有 {} 和 {}，已把旧键注释掉；"
-                        + "以后只改 {} 即可。", LEGACY_EXTRA_KEY, EXTRA_KEY, EXTRA_KEY);
+                if (missing.isEmpty()) {
+                    LOGGER.warn("[maid_better_gap] 配置文件里同时有 {} 和 {}，旧键的值新键里全都有，"
+                            + "已把旧键注释掉；以后只改 {} 即可。", LEGACY_EXTRA_KEY, EXTRA_KEY, EXTRA_KEY);
+                } else {
+                    LOGGER.warn("[maid_better_gap] 配置文件里同时有 {} 和 {}，已把旧键里新键没有的条目"
+                            + "（{}）并进新键，并注释掉旧键；以后只改 {} 即可。",
+                            LEGACY_EXTRA_KEY, EXTRA_KEY, String.join(", ", missing), EXTRA_KEY);
+                }
                 return;
             }
             // 只改键名，后面的值（物品 ID 列表，含多行数组）整块原样不动
@@ -282,9 +308,12 @@ public final class MaidGapConfig {
         int end = i;
         String value = trimmed.substring(eq + 1).trim();
         // 多行数组：同行没等到收尾的 ]，往下找到 ] 那行为止（找不到就按单行处理，文件本身坏了不自责）
-        if (value.startsWith("[") && !value.contains("]")) {
+        // 【R6，r52 复审】] 只认「引号外、行注释前」的那一个：数组块里夹一行含 ] 的注释
+        // （# 示例见附录 B]）或串内 ]（"a]b"）时，整行 contains 会把 end 提前定在那，
+        // 真收尾行之后的条目 collectQuoted 读不到，迁移旧键时会被当 missing 再插一遍。
+        if (value.startsWith("[") && arrayCloseIndex(trimmed) < 0) {
             for (int j = i + 1; j < lines.size(); j++) {
-                if (lines.get(j).contains("]")) {
+                if (arrayCloseIndex(lines.get(j)) >= 0) {
                     end = j;
                     break;
                 }
@@ -297,6 +326,180 @@ public final class MaidGapConfig {
     private static void commentOut(List<String> lines, int start, int end, String note) {
         for (int j = start; j <= end; j++) {
             lines.set(j, "# " + lines.get(j) + (j == start ? note : ""));
+        }
+    }
+
+    /**
+     * 抠出一个字符串数组值块里所有带引号的条目（按出现顺序）。
+     * 够简单场合用：隙间物品 ID 一律是 "ns:path" 形式，不含内嵌引号/转义，
+     * 逐字符配对双引号即可，不必上完整的 TOML 解析器。
+     * 【P3-3】先把每行截到行注释之前再配对：Forge 在数组块前写的说明注释、
+     * 玩家手加的注释里常带 "物品id" 这种示例引号，不过滤会被当成真条目并进新键。
+     */
+    private static List<String> collectQuoted(List<String> lines, int start, int end) {
+        List<String> out = new ArrayList<>();
+        for (int j = start; j <= end; j++) {
+            String raw = lines.get(j);
+            String line = raw.substring(0, commentIndex(raw));
+            int from = 0;
+            while (true) {
+                int open = line.indexOf('"', from);
+                if (open < 0) {
+                    break;
+                }
+                int close = line.indexOf('"', open + 1);
+                if (close < 0) {
+                    break; // 落单的引号（行被手改坏了）：到这就停，后面的内容不可信
+                }
+                String v = line.substring(open + 1, close).trim();
+                if (!v.isEmpty()) {
+                    out.add(v);
+                }
+                from = close + 1;
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 一行 TOML 里「注释 #」的起始下标（引号里的 # 不算注释）。
+     * 返回行长本身表示没有注释。物品 ID 形式的字符串不含 #，按引号对跳过即可。
+     */
+    private static int commentIndex(String line) {
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                int close = line.indexOf('"', i + 1);
+                if (close < 0) {
+                    return line.length(); // 落单引号：后面不再可信，当整行都是内容处理
+                }
+                i = close;
+            } else if (c == '#') {
+                return i;
+            }
+        }
+        return line.length();
+    }
+
+    /**
+     * 一行里数组收尾 `]` 的下标（取引号外、注释前的最后一个），没有则 -1。
+     * 【R6，r52 复审】与 commentIndex 同一口径：串内 `]`（"a]b"）与注释里的 `]`
+     * （# 示例见附录 B]）都不算收尾。落单引号之后的内容不可信，就此打住。
+     */
+    private static int arrayCloseIndex(String line) {
+        int found = -1;
+        for (int i = 0; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '"') {
+                int close = line.indexOf('"', i + 1);
+                if (close < 0) {
+                    return found; // 落单引号：引号里的 ] 不敢认，返回已找到的结果
+                }
+                i = close;
+            } else if (c == '#') {
+                return found; // 其后全是注释
+            } else if (c == ']') {
+                found = i;
+            }
+        }
+        return found;
+    }
+
+    /**
+     * 把若干字符串条目插进一个已定位的字符串数组值块（[start, end] 由 parseEntry 给出）。
+     * 单行数组在收尾 ] 前追加；多行数组在 ] 那行前面逐条插行。
+     * missing 为空时什么都不做（也绝不重排文件里已有的行）。
+     *
+     * 【P3】两个必须守住的 TOML 语法边界：
+     * <ul>
+     *   <li>单行数组已带尾逗号（{@code ["a",]}）：先剥掉尾逗号再决定用什么分隔，
+     *       否则会写成 {@code ["a",, "b" ]}，整个配置文件解析失败、全部设置回滚默认；</li>
+     *   <li>多行数组最后一项没有尾逗号：直接在 ] 前插行会写成
+     *       {@code "a:one"⏎ "b:two",}——两行之间缺逗号，同样解析失败。
+     *       所以插行之前先给块内最后一个真条目行补上逗号。</li>
+     * </ul>
+     */
+    private static void insertIntoArray(List<String> lines, int start, int end, List<String> missing) {
+        if (missing.isEmpty()) {
+            return;
+        }
+        StringBuilder add = new StringBuilder();
+        for (String id : missing) {
+            if (add.length() > 0) {
+                add.append(", ");
+            }
+            add.append('"').append(id).append('"');
+        }
+        String first = lines.get(start);
+        int eq = first.indexOf('=');
+        String value = eq < 0 ? "" : first.substring(eq + 1).trim();
+        boolean singleLine = start == end && value.startsWith("[") && arrayCloseIndex(first) >= 0;
+        if (singleLine) {
+            // 【R6-1】找收尾 ] 必须跳过行尾注释（arr = ["a"]  # 见附录 B]）里的 ]，
+            // 整行 lastIndexOf 会命中注释里那个、从中间把行截成不可解析的两半；
+            // 【R6，r52 复审】arrayCloseIndex 在此之上还跳过引号里的 ]（"a]b"），与 parseEntry 同口径。
+            int close = arrayCloseIndex(first);
+            if (close < 0) {
+                return; // ] 只存在于注释里：这一行本身已畸形，宁可不动也不写坏
+            }
+            String head = first.substring(0, close).stripTrailing();
+            String tail = first.substring(close);
+            // 已有尾逗号先剥掉（"a", → "a"），统一走“缺什么补什么”的分支
+            if (head.endsWith(",")) {
+                head = head.substring(0, head.length() - 1).stripTrailing();
+            }
+            // 空数组 [ ] 直接填；非空（["a"]）用逗号续上
+            String sep = head.endsWith("[") ? " " : ", ";
+            lines.set(start, head + sep + add + " " + tail);
+            return;
+        }
+        // 多行数组：插行前保证块内最后一个条目以逗号收尾（P3-1），再在 ] 行前逐条插入。
+        // 【R6 防线，r52 复审】parseEntry 扫完全文件没找到 ] 时会按单行返回（end == start）——
+        // 这种数组块本身就缺收尾，往 end 前插行会把条目插到键行前面、造出非法顶层行。
+        // 文件已坏，宁可一个条目都不插，也不在坏文件上再写一笔更坏的。
+        if (end <= start) {
+            return;
+        }
+        ensureTrailingCommaOnLastEntry(lines, start, end);
+        String indent = "  ";
+        for (int j = start + 1; j < end; j++) {
+            String l = lines.get(j);
+            if (l.substring(0, commentIndex(l)).contains("\"")) {
+                indent = l.substring(0, l.length() - l.stripLeading().length());
+                break;
+            }
+        }
+        for (int k = missing.size() - 1; k >= 0; k--) {
+            lines.add(end, indent + "\"" + missing.get(k) + "\",");
+        }
+    }
+
+    /**
+     * 从 ] 行往上找块内最后一个「真条目行」（跳空行与注释行），若它以引号收尾就补一个逗号。
+     * 逗号补在行内最后一个引号之后（而不是行尾），行尾注释不会被挤进非法位置。
+     *
+     * 【R6，r52 复审】循环下界取到 start（原为 j > start）：合法形态
+     * {@code enhanced_gap_items = ["a:one"␎]} 的唯一条目落在 start 行、] 独占 end 行，
+     * 旧界把 start 排除在外 → 不补逗号 → 插行后 "a:one" 与 "x:y" 之间缺逗号 → 整文件解析失败、
+     * 全部设置回滚默认且坏文件留着回不来。改成含 start 后：
+     * start 行 body 以 [ 收尾（纯开括号）时 continue 跳过，安全；
+     * 以 " 收尾（条目就在这一行）时正确补逗号，覆盖住这个真会写坏的形态。
+     */
+    private static void ensureTrailingCommaOnLastEntry(List<String> lines, int start, int end) {
+        for (int j = end - 1; j >= start; j--) {
+            String l = lines.get(j);
+            int c = commentIndex(l);
+            String body = l.substring(0, c).stripTrailing();
+            if (body.isEmpty() || body.endsWith("[")) {
+                continue; // 空行 / 注释行 / 以 [ 收尾的开行
+            }
+            if (body.endsWith("\"")) {
+                int q = l.lastIndexOf('"', c);
+                if (q >= 0) {
+                    lines.set(j, l.substring(0, q + 1) + "," + l.substring(q + 1));
+                }
+            }
+            return; // 最后一个条目行处理过（本来就带逗号时什么都不用做）
         }
     }
 

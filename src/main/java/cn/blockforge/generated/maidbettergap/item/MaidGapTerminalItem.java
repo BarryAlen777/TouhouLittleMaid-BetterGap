@@ -58,7 +58,7 @@ public class MaidGapTerminalItem extends Item {
     }
 
     @Override
-    public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
+    public void appendHoverText(ItemStack stack, Item.TooltipContext context, List<Component> tooltip, TooltipFlag flag) {
         int max = MaidGapConfig.MAX_BOUND_CONTAINERS.get();
         int bound = GapItemData.bindings(stack, "minecraft:overworld").size();
         int filters = 0;

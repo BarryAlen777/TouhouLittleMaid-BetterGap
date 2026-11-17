@@ -5,7 +5,7 @@ package com.github.tartaricacid.touhoulittlemaid.entity.passive;
 import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.entity.TamableAnimal;
 import net.minecraft.world.level.Level;
-import net.minecraftforge.items.wrapper.CombinedInvWrapper;
+import net.neoforged.neoforge.items.wrapper.CombinedInvWrapper;
 
 public abstract class EntityMaid extends TamableAnimal {
     /** 女仆界面是否打开着（原版隙间在打开界面时暂停传输）。 */

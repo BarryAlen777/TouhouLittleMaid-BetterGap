@@ -2,7 +2,7 @@
 // 运行时用的就是车万女仆自己的实现；这里只保证本模组能编译。
 package com.github.tartaricacid.touhoulittlemaid.inventory.handler;
 
-import net.minecraftforge.items.ItemStackHandler;
+import net.neoforged.neoforge.items.ItemStackHandler;
 
 /** 女仆饰品栏（真实类继承 ItemStackHandler，槽位读写方法都继承自它）。 */
 public class BaubleItemHandler extends ItemStackHandler {

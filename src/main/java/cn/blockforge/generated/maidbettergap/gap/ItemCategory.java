@@ -8,6 +8,7 @@ import net.minecraft.world.item.CrossbowItem;
 import net.minecraft.world.item.ElytraItem;
 import net.minecraft.world.item.FishingRodItem;
 import net.minecraft.world.item.HoeItem;
+import net.minecraft.core.component.DataComponents;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.PickaxeItem;
 import net.minecraft.world.item.ShovelItem;
@@ -32,7 +33,7 @@ public enum ItemCategory {
         if (stack.isEmpty()) {
             return OTHER;
         }
-        if (stack.isEdible()) {
+        if (stack.has(DataComponents.FOOD)) {
             return FOOD;
         }
         // 工具要先判断：斧、镐这类同时属于 SwordItem / 工具标签

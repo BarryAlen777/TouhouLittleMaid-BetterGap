@@ -67,7 +67,7 @@ public class GapTerminalItem extends Item {
     }
 
     @Override
-    public void appendHoverText(ItemStack stack, @Nullable Level level, List<Component> tooltip, TooltipFlag flag) {
+    public void appendHoverText(ItemStack stack, Item.TooltipContext context, List<Component> tooltip, TooltipFlag flag) {
         if (GapLinkData.hasLink(stack)) {
             String name = GapLinkData.savedName(stack);
             tooltip.add(Component.translatable("maidgap.tt.linked",

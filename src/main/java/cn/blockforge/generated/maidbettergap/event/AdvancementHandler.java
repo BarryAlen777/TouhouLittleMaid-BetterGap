@@ -2,16 +2,16 @@ package cn.blockforge.generated.maidbettergap.event;
 
 import cn.blockforge.generated.maidbettergap.GeneratedMod;
 import cn.blockforge.generated.maidbettergap.ModItems;
-import net.minecraft.advancements.Advancement;
+import net.minecraft.advancements.AdvancementHolder;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.PlayerAdvancements;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
-import net.minecraftforge.event.entity.player.PlayerEvent;
-import net.minecraftforge.eventbus.api.SubscribeEvent;
-import net.minecraftforge.fml.common.Mod;
+import net.neoforged.neoforge.event.entity.player.PlayerEvent;
+import net.neoforged.bus.api.SubscribeEvent;
+import net.neoforged.fml.common.EventBusSubscriber;
 
 /**
  * 成就页签的补发逻辑。
@@ -24,7 +24,7 @@ import net.minecraftforge.fml.common.Mod;
  * 顺带处理老存档：玩家进游戏时背包里已经有这两件物品的，直接把对应成就补上，
  * 不需要把物品丢掉再捡一次。
  */
-@Mod.EventBusSubscriber(modid = GeneratedMod.MOD_ID)
+@EventBusSubscriber(modid = GeneratedMod.MOD_ID)
 public final class AdvancementHandler {
 
     private static final String CRITERION_ROOT = "granted";
@@ -63,15 +63,16 @@ public final class AdvancementHandler {
     }
 
     private static void grant(MinecraftServer server, ServerPlayer player, String path, String criterion) {
-        Advancement advancement = server.getAdvancements()
-                .getAdvancement(ResourceLocation.tryBuild(GeneratedMod.MOD_ID, path));
-        if (advancement == null) {
+        // 1.21.1：成就从 Advancement 对象改成 AdvancementHolder（按 ResourceLocation 查）。
+        AdvancementHolder holder = server.getAdvancements()
+                .get(ResourceLocation.fromNamespaceAndPath(GeneratedMod.MOD_ID, path));
+        if (holder == null) {
             // 数据包没加载出来（被别的模组/数据包改坏了）时静默跳过，别影响进游戏
             return;
         }
         PlayerAdvancements progress = player.getAdvancements();
-        if (!progress.getOrStartProgress(advancement).isDone()) {
-            progress.award(advancement, criterion);
+        if (!progress.getOrStartProgress(holder).isDone()) {
+            progress.award(holder, criterion);
         }
     }
 }

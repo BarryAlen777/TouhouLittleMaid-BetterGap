@@ -89,8 +89,9 @@ public final class GapStore {
     public static List<ItemStack> refillMemory(Player player) {
         List<ItemStack> out = new ArrayList<>();
         ListTag list = root(player).getList(K_REFILL_MEM, Tag.TAG_COMPOUND);
+        net.minecraft.core.HolderLookup.Provider reg = player.level().registryAccess();
         for (int i = 0; i < list.size(); i++) {
-            ItemStack st = ItemStack.of(list.getCompound(i));
+            ItemStack st = ItemStack.parseOptional(reg, list.getCompound(i));
             if (!st.isEmpty()) {
                 out.add(st);
             }
@@ -100,9 +101,10 @@ public final class GapStore {
 
     public static void setRefillMemory(Player player, List<ItemStack> memory) {
         ListTag list = new ListTag();
+        net.minecraft.core.HolderLookup.Provider reg = player.level().registryAccess();
         for (ItemStack st : memory) {
             CompoundTag e = new CompoundTag();
-            st.save(e);
+            st.save(reg, e);
             list.add(e);
         }
         CompoundTag root = root(player);
@@ -134,7 +136,7 @@ public final class GapStore {
         ItemStack proto = used.copy();
         proto.setCount(1);
         List<RecentUse> list = RECENT_USED.computeIfAbsent(player.getUUID(), k -> new ArrayList<>());
-        list.removeIf(old -> ItemStack.isSameItemSameTags(old.stack(), proto));
+        list.removeIf(old -> ItemStack.isSameItemSameComponents(old.stack(), proto));
         list.add(0, new RecentUse(proto, player.level().getGameTime()));
         while (list.size() > RECENT_MAX) {
             list.remove(list.size() - 1);
